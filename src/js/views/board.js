@@ -8,6 +8,7 @@ import { el, clear, pct } from '../utils.js';
 export function renderBoard(mount, ctx) {
   clear(mount);
   const tasks = store.tasks(ctx.projectId).filter(ctx.filter);
+  const rw = !ctx.canWrite || ctx.canWrite();   // read-only role: no drag/drop
   const board = el('div', { class: 'board' });
 
   STATUS_ORDER.forEach((status) => {
@@ -22,15 +23,17 @@ export function renderBoard(mount, ctx) {
 
     const list = el('div', { class: 'board-list' });
 
-    // drop handling
-    col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drag-over'); });
-    col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
-    col.addEventListener('drop', (e) => {
-      e.preventDefault();
-      col.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain');
-      if (id) store.updateTask(id, { status });
-    });
+    // drop handling (writers only)
+    if (rw) {
+      col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drag-over'); });
+      col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+      col.addEventListener('drop', (e) => {
+        e.preventDefault();
+        col.classList.remove('drag-over');
+        const id = e.dataTransfer.getData('text/plain');
+        if (id) store.updateTask(id, { status });
+      });
+    }
 
     colTasks.forEach((t) => {
       const proj = store.project(t.projectId);
@@ -38,7 +41,7 @@ export function renderBoard(mount, ctx) {
       const trade = TRADES[t.trade];
       const card = el('div', {
         class: 'card' + (t.milestone ? ' milestone' : ''),
-        draggable: 'true',
+        draggable: rw ? 'true' : null,
         style: { borderLeftColor: trade.color },
         onclick: () => ctx.openTask(t.id),
       }, [

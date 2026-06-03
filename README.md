@@ -50,6 +50,11 @@ views changes.
 | `POST /api/reset` | reseed the sample data |
 | `POST /api/baseline` | snapshot the current schedule as the baseline |
 | `DELETE /api/baseline` | clear the baseline |
+| `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
+| `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management |
+
+All `/api` routes except `auth/*` require a valid session; writes require `pm`+
+and `reset`/`users` require `admin`.
 
 The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
 **`src/js/seed.js`** and is imported by *both* the browser and the server, so the
@@ -85,18 +90,45 @@ The demo ships with a baseline already captured and a few work packages drifted,
 so the variance is visible immediately. `POST /api/baseline` snapshots server-side;
 `DELETE /api/baseline` clears it.
 
-### Team identity & edit attribution
+### Authentication & per-user permissions
 
-Pick who you are from the **identity chip** in the header (stored locally). Every
-edit is stamped with your name + time and sent to the server via an `X-User`
-header; tasks show **who last edited them** (in the dialog and on board cards),
-and a concurrency conflict toast **names the person** who got there first.
+When served by `server.mjs`, the app **requires sign-in** and enforces
+**role-based access control**. (Served by a plain static host with no API, it
+runs in single-user local mode with no login.)
 
-> **Honest scope:** this is *attribution for a trusted team*, **not
-> authentication**. The server trusts the `X-User` header — there are no
-> passwords, sessions, or access control. Real auth (sessions/JWT, per-user
-> permissions) is the production step; this layer makes collaborative editing
-> legible without pretending to be a security boundary.
+**Demo accounts** (also shown on the login screen):
+
+| Username | Password | Role | Can |
+|----------|----------|------|-----|
+| `admin` | `admin123` | admin | everything incl. reset + user management |
+| `awhitfield` | `build123` | pm | read + write (edit tasks, baselines) |
+| `viewer` | `view123` | viewer | read-only |
+
+How it works:
+
+- **Passwords** are hashed with `scrypt` + a per-user random salt and compared in
+  constant time (`crypto.timingSafeEqual`). Plaintext is never stored. Users live
+  in `data/auth.json`, separate from the schedule.
+- **Sessions**: login issues a crypto-random token stored server-side and set as
+  an **`HttpOnly; SameSite=Strict`** cookie. Sessions expire after 12h; logout
+  destroys them; changing a user's role revokes their existing sessions.
+- **RBAC** is enforced **server-side** on every `/api` route: reads need a
+  session, writes need `pm`+, and `reset`/user-management need `admin`
+  (`401` unauthenticated, `403` forbidden). The UI mirrors this (hides New Task,
+  baseline, reset, drag, etc. for read-only roles), but the server is the
+  boundary — a viewer's edits are rejected even if the client is bypassed.
+- **Attribution** is taken from the authenticated session, so it **can't be
+  spoofed** by a header. Tasks show who last edited them; the conflict toast
+  names them.
+- **Login throttling**: 5 failed attempts per username triggers a 60-second
+  lockout (`429`).
+- **Admins** manage users (create / set role / delete, with last-admin
+  protection) from the **Users** panel in the header.
+
+> **Production note:** the session cookie omits the `Secure` flag because the
+> demo runs over plain HTTP on localhost — behind HTTPS you'd add `Secure`.
+> Sessions are in-memory (a restart logs everyone out); a real deployment would
+> back them with a store like Redis.
 
 ### Earned-Value Management (CPI/SPI)
 
@@ -135,7 +167,8 @@ today + EAC forecast) and a per-project earned-value table with a health verdict
 
 ```
 index.html              # shell, loads fonts + the ES-module entry
-server.mjs              # zero-dependency static host + REST API + file persistence
+server.mjs              # zero-dep static host + REST API + auth gate + persistence
+auth.js                 # server-only: scrypt hashing, sessions, RBAC, throttling
 src/
   css/styles.css        # dark "control-room" theme
   js/
@@ -166,8 +199,8 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Resource leveling / crew over-allocation warnings
-- Real authentication (sessions/JWT) + per-user permissions, hardening the
-  current trusted-header attribution into an actual access boundary
+- Project-scoped permissions (a PM assigned to specific projects only)
+- Audit log of changes (who/what/when), browsable in-app
 - Baseline history (keep multiple baselines, compare across revisions)
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
@@ -175,4 +208,5 @@ zero total float are flagged), not hard-coded.
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·
 ✅ baseline vs. actual variance tracking ·
-✅ team identity & edit attribution.
+✅ authentication (scrypt + sessions) & role-based permissions with edit
+attribution & admin user management.

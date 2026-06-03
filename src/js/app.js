@@ -27,6 +27,7 @@ const ctx = {
     renderActiveView();
   },
   gotoToday: () => { ctx.calMonth = Dates.iso(new Date()).slice(0, 7); renderActiveView(); },
+  canWrite: () => store.can('write'),
 };
 
 const VIEWS = {
@@ -40,7 +41,7 @@ let viewMount; // the area where the active view renders
 
 // --------------------------------------------------------------------------
 function renderActiveView() {
-  if (!viewMount) return;
+  if (!built || !viewMount || !viewMount.isConnected) return;
   VIEWS[ctx.view].render(viewMount, ctx);
   renderKpis();
 }
@@ -109,7 +110,7 @@ function renderHeader(root) {
         }, [el('span', { class: 'view-icon' }, v.icon), v.label]))),
     el('div', { class: 'header-actions' }, [
       identityChip(root),
-      el('button', { class: 'btn primary', onclick: () => openEditor(null) }, '+ New Task'),
+      store.can('write') ? el('button', { class: 'btn primary', onclick: () => openEditor(null) }, '+ New Task') : null,
     ]),
   ]);
 
@@ -133,7 +134,7 @@ function renderHeader(root) {
       baselineControls(),
       ctx.view === 'gantt' ? toggle('Critical Path', ctx.showCritical, (v) => { ctx.showCritical = v; renderActiveView(); }) : null,
       ctx.view === 'gantt' && store.baseline ? toggle('Baseline', ctx.showBaseline, (v) => { ctx.showBaseline = v; renderActiveView(); }) : null,
-      el('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset all schedule data to the seeded sample?')) store.reset(); } }, '↺ Reset Demo'),
+      store.can('admin') ? el('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset all schedule data to the seeded sample?')) store.reset(); } }, '↺ Reset Demo') : null,
     ]),
   ]);
 
@@ -151,31 +152,50 @@ function toggle(label, checked, onChange) {
   return el('label', { class: 'toggle' }, [c, el('span', { class: 'toggle-track' }), label]);
 }
 
-// Team identity chip (attribution, not authentication).
+const ROLE_LABEL = { admin: 'Admin', pm: 'Project Mgr', viewer: 'Viewer' };
+
+// Identity area: signed-in user + role + logout (authenticated server mode),
+// or an editable local identity chip (offline single-user mode).
 function identityChip(root) {
-  return el('button', {
-    class: 'identity', title: 'Click to change who you are (used to attribute edits)',
-    onclick: () => {
-      const name = window.prompt('Your name / role (used to attribute schedule edits):', store.user);
-      if (name != null) { store.setUser(name); renderHeader(root); }
-    },
-  }, [
-    el('span', { class: 'identity-avatar' }, store.user.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase()),
-    el('span', { class: 'identity-name' }, store.user),
+  const avatar = (name) => el('span', { class: 'identity-avatar' },
+    (name || '?').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase());
+
+  if (store.mode === 'local') {
+    return el('button', {
+      class: 'identity', title: 'Click to change who you are (used to attribute edits)',
+      onclick: () => {
+        const name = window.prompt('Your name / role (used to attribute schedule edits):', store.user);
+        if (name != null) { store.setUser(name); renderHeader(root); }
+      },
+    }, [avatar(store.user), el('span', { class: 'identity-name' }, store.user)]);
+  }
+
+  return el('div', { class: 'identity-box' }, [
+    el('div', { class: 'identity' }, [
+      avatar(store.user),
+      el('div', { class: 'identity-meta' }, [
+        el('span', { class: 'identity-name' }, store.user),
+        el('span', { class: 'role-badge role-' + store.role }, ROLE_LABEL[store.role] || store.role),
+      ]),
+    ]),
+    store.can('admin') ? el('button', { class: 'btn ghost sm', onclick: () => openUsersPanel() }, 'Users') : null,
+    el('button', { class: 'btn ghost sm', title: 'Sign out', onclick: () => store.logout() }, 'Sign out'),
   ]);
 }
 
-// Baseline save/clear control with the saved-date indicator.
+// Baseline save/clear control with the saved-date indicator. Editing requires
+// write access; read-only roles just see the baseline tag.
 function baselineControls() {
   const b = store.baseline;
+  const rw = store.can('write');
   if (!b) {
-    return el('button', { class: 'btn ghost', title: 'Snapshot the current schedule as the plan to measure slip against',
-      onclick: () => store.saveBaseline() }, '📌 Save Baseline');
+    return rw ? el('button', { class: 'btn ghost', title: 'Snapshot the current schedule as the plan to measure slip against',
+      onclick: () => store.saveBaseline() }, '📌 Save Baseline') : null;
   }
   return el('div', { class: 'baseline-ctl' }, [
     el('span', { class: 'baseline-tag', title: `Baseline by ${b.savedBy || 'Unknown'}` }, `Baseline · ${Dates.fmt(b.savedAt)}`),
-    el('button', { class: 'btn ghost sm', onclick: () => store.saveBaseline() }, 'Re-baseline'),
-    el('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Clear the saved baseline?')) store.clearBaseline(); } }, 'Clear'),
+    rw ? el('button', { class: 'btn ghost sm', onclick: () => store.saveBaseline() }, 'Re-baseline') : null,
+    rw ? el('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Clear the saved baseline?')) store.clearBaseline(); } }, 'Clear') : null,
   ]);
 }
 
@@ -217,7 +237,9 @@ function metaPanel(t) {
 
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
+  const RW = store.can('write');           // read-only roles can view but not edit
   const isNew = taskId == null;
+  if (isNew && !RW) return;                // viewers can't create
   const t = isNew ? {
     projectId: ctx.projectId === 'all' ? store.projects[0].id : ctx.projectId,
     name: '', trade: ctx.tradeFilter === 'all' ? 'sitework' : ctx.tradeFilter,
@@ -251,7 +273,8 @@ function openEditor(taskId) {
 
   const modal = el('div', { class: 'modal' }, [
     el('div', { class: 'modal-head' }, [
-      el('h2', {}, isNew ? 'New Work Package' : 'Edit Work Package'),
+      el('h2', {}, isNew ? 'New Work Package' : (RW ? 'Edit Work Package' : 'Work Package')),
+      !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null,
       el('button', { class: 'modal-x', onclick: close }, '✕'),
     ]),
     el('div', { class: 'modal-body' }, [
@@ -272,17 +295,19 @@ function openEditor(taskId) {
       !isNew ? metaPanel(t) : null,
     ]),
     el('div', { class: 'modal-foot' }, [
-      !isNew ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this task?')) { store.deleteTask(taskId); close(); } } }, 'Delete') : el('span'),
+      (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this task?')) { store.deleteTask(taskId); close(); } } }, 'Delete') : el('span'),
       el('div', { class: 'foot-right' }, [
-        el('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
-        el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create Task' : 'Save Changes'),
+        el('button', { class: 'btn ghost', onclick: close }, RW ? 'Cancel' : 'Close'),
+        RW ? el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create Task' : 'Save Changes') : null,
       ]),
     ]),
   ]);
 
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
-  setTimeout(() => f.name.focus(), 30);
+  // Read-only: lock every field so a viewer can inspect but not change.
+  if (!RW) modal.querySelectorAll('input, select, textarea').forEach((n) => { n.disabled = true; });
+  setTimeout(() => { if (RW) f.name.focus(); }, 30);
 
   function collect() {
     let start = f.start.value, end = f.end.value;
@@ -308,11 +333,129 @@ function openEditor(taskId) {
   document.addEventListener('keydown', onKey);
 }
 
-// --- Boot -------------------------------------------------------------------
-export function boot() {
-  const root = document.getElementById('app');
-  renderHeader(root);
+// --- Admin: user management panel -------------------------------------------
+function openUsersPanel() {
+  if (!store.can('admin')) return;
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const listBody = el('div', { class: 'users-list' });
+  const err = el('div', { class: 'login-err' });
+  const ROLES = ['viewer', 'pm', 'admin'];
 
+  async function refresh() {
+    err.textContent = '';
+    clear(listBody);
+    let users = [];
+    try { users = await store.listUsers(); }
+    catch (e) { err.textContent = 'Could not load users'; return; }
+    users.forEach((u) => {
+      const roleSel = el('select', { class: 'select sm', onchange: async (e) => {
+        try { await store.setUserRole(u.username, e.target.value); await refresh(); }
+        catch (er) { err.textContent = (er.data && er.data.error) || 'Update failed'; }
+      } }, ROLES.map((r) => el('option', { value: r }, ROLE_LABEL[r])));
+      roleSel.value = u.role;
+      listBody.appendChild(el('div', { class: 'user-row' }, [
+        el('span', { class: 'identity-avatar' }, (u.name || u.username).split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase()),
+        el('div', { class: 'user-id' }, [el('div', { class: 'user-name' }, u.name || u.username), el('div', { class: 'user-uname' }, '@' + u.username)]),
+        roleSel,
+        el('button', { class: 'btn ghost sm', onclick: async () => {
+          if (!confirm(`Delete user “${u.username}”?`)) return;
+          try { await store.deleteUser(u.username); await refresh(); }
+          catch (er) { err.textContent = (er.data && er.data.error) || 'Delete failed'; }
+        } }, 'Delete'),
+      ]));
+    });
+  }
+
+  const nu = el('input', { class: 'input sm', placeholder: 'username' });
+  const np = el('input', { class: 'input sm', type: 'password', placeholder: 'password' });
+  const nn = el('input', { class: 'input sm', placeholder: 'display name' });
+  const nr = el('select', { class: 'select sm' }, ROLES.map((r) => el('option', { value: r }, ROLE_LABEL[r])));
+  nr.value = 'pm';
+  const addBtn = el('button', { class: 'btn primary sm', onclick: async () => {
+    err.textContent = '';
+    try {
+      await store.createUser({ username: nu.value.trim(), password: np.value, name: nn.value.trim(), role: nr.value });
+      nu.value = np.value = nn.value = '';
+      await refresh();
+    } catch (er) { err.textContent = (er.data && er.data.error) || 'Create failed'; }
+  } }, 'Add user');
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'User Management'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [
+      listBody,
+      err,
+      el('div', { class: 'user-add' }, [
+        el('div', { class: 'user-add-title' }, 'Add a user'),
+        el('div', { class: 'user-add-row' }, [nu, np, nn, nr, addBtn]),
+      ]),
+    ]),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  refresh();
+
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
+
+// --- Login screen -----------------------------------------------------------
+function renderLogin(root) {
+  built = false;
+  clear(root);
+  const u = el('input', { class: 'input', type: 'text', placeholder: 'Username', autocomplete: 'username' });
+  const p = el('input', { class: 'input', type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
+  const err = el('div', { class: 'login-err' });
+  const btn = el('button', { class: 'btn primary login-btn', type: 'submit' }, 'Sign in');
+
+  async function submit(e) {
+    if (e) e.preventDefault();
+    err.textContent = '';
+    btn.disabled = true; btn.textContent = 'Signing in…';
+    const res = await store.login(u.value.trim(), p.value);
+    if (!res.ok) {
+      err.textContent = res.error || 'Sign in failed';
+      btn.disabled = false; btn.textContent = 'Sign in';
+      p.value = ''; p.focus();
+    }
+    // on success, onAuth → renderShell builds the app
+  }
+
+  const form = el('form', { class: 'login-card', onsubmit: submit }, [
+    el('div', { class: 'login-brand' }, [
+      el('div', { class: 'brand-mark lg' }, '◭'),
+      el('div', {}, [
+        el('div', { class: 'brand-name' }, 'BuildFlow'),
+        el('div', { class: 'brand-sub' }, 'ERP · Construction Schedule'),
+      ]),
+    ]),
+    el('h2', { class: 'login-title' }, 'Sign in to continue'),
+    el('label', { class: 'login-label' }, 'Username'), u,
+    el('label', { class: 'login-label' }, 'Password'), p,
+    err,
+    btn,
+    el('div', { class: 'login-demo' }, [
+      el('div', { class: 'login-demo-title' }, 'Demo accounts'),
+      el('div', {}, 'admin / admin123 — full access'),
+      el('div', {}, 'awhitfield / build123 — project manager (edit)'),
+      el('div', {}, 'viewer / view123 — read-only'),
+    ]),
+  ]);
+  root.appendChild(el('div', { class: 'login-screen' }, form));
+  setTimeout(() => u.focus(), 30);
+}
+
+function renderLoading(root) {
+  clear(root);
+  root.appendChild(el('div', { class: 'login-screen' },
+    el('div', { class: 'loading' }, [el('div', { class: 'brand-mark lg' }, '◭'), el('div', {}, 'Loading…')])));
+}
+
+// --- App shell --------------------------------------------------------------
+function buildApp(root) {
+  clear(root);
+  renderHeader(root);
   const kpis = el('div', { id: 'kpis', class: 'kpi-bar' });
   viewMount = el('main', { id: 'view', class: 'view-area' });
   const sync = el('span', { id: 'sync-pill', class: 'sync-pill local' }, 'Local cache');
@@ -323,25 +466,44 @@ export function boot() {
     el('span', { class: 'foot-sep' }, '·'),
     sync,
   ]));
+  root.appendChild(el('div', { class: 'toast-stack' }));
+  built = true;
+  renderActiveView();
+}
 
-  // Reflect persistence mode (server-backed vs. local-only) live.
+// Decide what to show based on the store's auth state.
+let built = false;
+function renderShell(root, authState) {
+  if (authState === 'required') return renderLogin(root);
+  if (authState === 'unknown') return built ? null : renderLoading(root);
+  // 'authed' or 'local'
+  if (!built) buildApp(root); else { renderHeader(root); renderActiveView(); }
+}
+
+// --- Boot -------------------------------------------------------------------
+export function boot() {
+  const root = document.getElementById('app');
+
+  // One-time global subscriptions (DOM targets are looked up each time and
+  // skipped when absent, so this survives login/logout shell rebuilds).
   store.onStatus((mode, syncing) => {
+    const sync = document.getElementById('sync-pill');
+    if (!sync) return;
     sync.className = 'sync-pill ' + mode + (syncing ? ' syncing' : '');
     sync.textContent = syncing ? 'Saving…' : (mode === 'remote' ? 'Synced to server' : 'Local cache');
   });
-
-  // Toasts for concurrency events (another user edited / conflict reloaded).
-  const toasts = el('div', { class: 'toast-stack' });
-  root.appendChild(toasts);
   store.onNotice((msg, tone = 'info') => {
+    const toasts = document.querySelector('.toast-stack');
+    if (!toasts) return;
     const t = el('div', { class: 'toast ' + tone }, msg);
     toasts.appendChild(t);
     setTimeout(() => t.classList.add('show'), 10);
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 4200);
   });
-
   store.subscribe(() => renderActiveView());
-  renderActiveView();
+  store.onAuth((authState) => renderShell(root, authState));
+
+  renderShell(root, store.authState);
 }
 
 window.addEventListener('DOMContentLoaded', boot);

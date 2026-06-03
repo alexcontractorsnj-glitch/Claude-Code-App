@@ -32,6 +32,7 @@ async function api(method, path, body, headers = {}) {
       method,
       headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',     // send the session cookie
       signal: ctrl.signal,
     });
     const etag = res.headers.get('ETag');
@@ -62,14 +63,87 @@ class Store {
     this.listeners = new Set();
     this.statusListeners = new Set();
     this.noticeListeners = new Set();
+    this.authListeners = new Set();
     this.mode = 'local';          // 'local' until the API answers
     this.syncing = false;
     this.rev = null;              // last global revision seen from the server
     this._poll = null;
-    this.user = this._loadUser(); // team identity for edit attribution
+    this.authState = 'unknown';   // unknown | local | required | authed
+    this.role = null;             // server role when authenticated
+    this.user = this._loadUser(); // display name (local identity, or session user)
     this.state = normalizeState(this._loadLocal());
-    this._hydrateRemote();        // fire-and-forget; re-emits if server responds
+    this._boot();                 // detect auth, then hydrate if allowed
   }
+
+  // Decide between authenticated-server mode and offline local mode.
+  async _boot() {
+    try {
+      const { data } = await api('GET', '/auth/me');
+      this._applyUser(data.user);
+      this.mode = 'remote';
+      this.authState = 'authed';
+      this._emitAuth();
+      await this._hydrateRemote();
+    } catch (err) {
+      if (err && err.status === 401) {
+        this.mode = 'remote';
+        this.authState = 'required';   // server is there, but we must sign in
+        this._emitAuth();
+      } else {
+        this.mode = 'local';           // no API (file:// or static host) → single-user
+        this.authState = 'local';
+        this._emitAuth();
+      }
+      this._emitStatus();
+    }
+  }
+
+  _applyUser(u) {
+    if (!u) return;
+    this.user = u.name || u.username;
+    this.role = u.role;
+  }
+
+  // ---- auth actions ----
+  async login(username, password) {
+    try {
+      const { data } = await api('POST', '/auth/login', { username, password });
+      this._applyUser(data.user);
+      this.mode = 'remote';
+      this.authState = 'authed';
+      this._emitAuth();
+      await this._hydrateRemote();
+      return { ok: true };
+    } catch (err) {
+      const msg = (err && err.data && err.data.error) || 'Sign in failed';
+      return { ok: false, error: msg };
+    }
+  }
+
+  async logout() {
+    try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
+    if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this.role = null;
+    this.authState = 'required';
+    this._emitAuth();
+  }
+
+  // Capability check. Local (no server) mode is single-user → full rights.
+  can(action) {
+    if (this.mode === 'local') return true;
+    if (this.authState !== 'authed') return false;
+    const rank = { viewer: 0, pm: 1, admin: 2 }[this.role] ?? -1;
+    if (action === 'read') return rank >= 0;
+    if (action === 'write') return rank >= 1;
+    if (action === 'admin') return rank >= 2;
+    return false;
+  }
+
+  // ---- admin: user management (thin API wrappers) ----
+  listUsers() { return api('GET', '/users').then((r) => r.data); }
+  createUser(u) { return api('POST', '/users', u).then((r) => r.data); }
+  setUserRole(username, role) { return api('PATCH', '/users/' + username, { role }).then((r) => r.data); }
+  deleteUser(username) { return api('DELETE', '/users/' + username).then(() => true); }
 
   // ---- team identity (attribution, not authentication) ----
   _loadUser() {
@@ -82,7 +156,6 @@ class Store {
     this._emitStatus();
   }
   _stamp() { return { lastEditedBy: this.user, lastEditedAt: new Date().toISOString() }; }
-  _userHeader() { return { 'X-User': encodeURIComponent(this.user) }; }
 
   // ---- persistence layers ----
   _loadLocal() {
@@ -104,21 +177,25 @@ class Store {
   }
 
   async _hydrateRemote() {
-    try {
-      const { data, etag } = await api('GET', '/state');
-      if (data && data.tasks) {
-        this.state = normalizeState(data);
-        this.rev = revOf(etag) ?? data.rev ?? this.rev;
-        this.mode = 'remote';
-        this._cacheLocal(this.state);
-        this.listeners.forEach((fn) => fn(this.state));
-        this._startPolling();
-      }
-    } catch (e) {
-      this.mode = 'local';        // file:// or no API — stay on LocalStorage
-    } finally {
-      this._emitStatus();
+    const { data, etag } = await api('GET', '/state');
+    if (data && data.tasks) {
+      this.state = normalizeState(data);
+      this.rev = revOf(etag) ?? data.rev ?? this.rev;
+      this.mode = 'remote';
+      this._cacheLocal(this.state);
+      this.listeners.forEach((fn) => fn(this.state));
+      this._startPolling();
     }
+    this._emitStatus();
+  }
+
+  // Session expired (or revoked) mid-session → bounce to the login screen.
+  _sessionLost() {
+    if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this.role = null;
+    this.authState = 'required';
+    this._setSyncing(false);
+    this._emitAuth();
   }
 
   // Poll the server; only re-hydrate when the global rev advances past ours
@@ -140,6 +217,7 @@ class Store {
           this._notify('Schedule updated by another user', 'info');
         }
       } catch (e) {
+        if (e && e.status === 401) { this._sessionLost(); return; }
         this.mode = 'local';
         this._emitStatus();
         clearInterval(this._poll); this._poll = null;
@@ -151,8 +229,24 @@ class Store {
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   onStatus(fn) { this.statusListeners.add(fn); return () => this.statusListeners.delete(fn); }
   onNotice(fn) { this.noticeListeners.add(fn); return () => this.noticeListeners.delete(fn); }
+  onAuth(fn) { this.authListeners.add(fn); return () => this.authListeners.delete(fn); }
   _emit() { this._cacheLocal(this.state); this.listeners.forEach((fn) => fn(this.state)); }
   _emitStatus() { this.statusListeners.forEach((fn) => fn(this.mode, this.syncing)); }
+  _emitAuth() { this.authListeners.forEach((fn) => fn(this.authState, this.user, this.role)); }
+
+  // Common handling for a failed write: session loss → re-login, forbidden →
+  // notify + reconcile, anything else → fall back to local cache.
+  _writeFailed(err) {
+    this._setSyncing(false);
+    if (err && err.status === 401) { this._sessionLost(); return; }
+    if (err && err.status === 403) {
+      this._notify('Your role doesn’t allow that change — reverting.', 'warn');
+      if (this.authState === 'authed') this._hydrateRemote().catch(() => {});
+      return;
+    }
+    this.mode = 'local';
+    this._emitStatus();
+  }
   _notify(msg, tone) { this.noticeListeners.forEach((fn) => fn(msg, tone)); }
 
   _setSyncing(v) { this.syncing = v; this._emitStatus(); }
@@ -175,6 +269,7 @@ class Store {
   // carries If-Match with the task's known rev — a 409 means someone else
   // changed it first → we re-hydrate from the server and tell the user.
   updateTask(id, patch) {
+    if (!this._guardWrite()) return;
     const t = this.task(id);
     if (!t) return;
     const baseRev = t.rev || 1;
@@ -183,7 +278,7 @@ class Store {
     this._emit();
     if (this.mode !== 'remote') return;
     this._setSyncing(true);
-    api('PATCH', '/tasks/' + id, stamped, { 'If-Match': '"' + baseRev + '"', ...this._userHeader() })
+    api('PATCH', '/tasks/' + id, stamped, { 'If-Match': '"' + baseRev + '"' })
       .then(({ data, etag }) => {
         const cur = this.task(id);
         if (cur && data && data.rev != null) cur.rev = data.rev;
@@ -191,33 +286,34 @@ class Store {
         this._setSyncing(false);
       })
       .catch((err) => {
-        this._setSyncing(false);
         if (err.status === 409) {
+          this._setSyncing(false);
           const who = err.data && err.data.current && err.data.current.lastEditedBy;
           this._notify(`“${t.name}” was just changed by ${who || 'another user'} — reloaded the latest.`, 'warn');
-          this._hydrateRemote();
+          this._hydrateRemote().catch(() => {});
         } else {
-          this.mode = 'local';
-          this._emitStatus();
+          this._writeFailed(err);
         }
       });
   }
 
   addTask(partial) {
+    if (!this._guardWrite()) return null;
     const full = makeTask(this.state.tasks, { ...partial, ...this._stamp() });
     this.state.tasks.push(full);
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
-      api('POST', '/tasks', full, this._userHeader())
+      api('POST', '/tasks', full)
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
-        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+        .catch((err) => this._writeFailed(err));
     }
     return full;
   }
 
   // ---- baseline (planned vs. actual) ----
   saveBaseline() {
+    if (!this._guardWrite()) return;
     const snap = {
       label: 'Baseline', savedAt: Dates.today(), savedBy: this.user,
       tasks: Object.fromEntries(this.state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
@@ -226,25 +322,27 @@ class Store {
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
-      api('POST', '/baseline', { savedBy: this.user }, this._userHeader())
+      api('POST', '/baseline', { savedBy: this.user })
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
-        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+        .catch((err) => this._writeFailed(err));
     }
     this._notify('Baseline saved — variance is now measured against today’s plan.', 'info');
   }
 
   clearBaseline() {
+    if (!this._guardWrite()) return;
     this.state.baseline = null;
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
       api('DELETE', '/baseline')
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
-        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+        .catch((err) => this._writeFailed(err));
     }
   }
 
   deleteTask(id) {
+    if (!this._guardWrite()) return;
     this.state.tasks = this.state.tasks.filter((t) => t.id !== id);
     this.state.tasks.forEach((t) => {
       t.dependencies = t.dependencies.filter((d) => d !== id);
@@ -254,12 +352,20 @@ class Store {
       this._setSyncing(true);
       api('DELETE', '/tasks/' + id)
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
-        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+        .catch((err) => this._writeFailed(err));
     }
+  }
+
+  // Client-side permission gate (defence in depth; the server also enforces).
+  _guardWrite() {
+    if (this.can('write')) return true;
+    this._notify('You have read-only access — that change was blocked.', 'warn');
+    return false;
   }
 
   async reset() {
     if (this.mode === 'remote') {
+      if (!this.can('admin')) { this._notify('Only an admin can reset the schedule.', 'warn'); return; }
       this._setSyncing(true);
       try {
         const { data, etag } = await api('POST', '/reset');
@@ -269,7 +375,7 @@ class Store {
           this._emit();
           return;
         }
-      } catch (e) { this.mode = 'local'; this._emitStatus(); }
+      } catch (e) { this._writeFailed(e); }
       finally { this._setSyncing(false); }
     }
     this.state = seedState();
