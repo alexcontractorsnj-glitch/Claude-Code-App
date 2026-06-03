@@ -18,6 +18,20 @@ export function taskVariance(task, baseline) {
   };
 }
 
+// Compare two baseline snapshots → how the *plan itself* changed between
+// revisions (count of tasks whose planned start/end moved, plus added/removed).
+export function compareBaselines(prev, next) {
+  if (!prev || !next) return { changed: 0, added: 0, removed: 0 };
+  const a = prev.tasks || {}, b = next.tasks || {};
+  let changed = 0, added = 0, removed = 0;
+  Object.keys(b).forEach((id) => {
+    if (!a[id]) { added += 1; return; }
+    if (a[id].start !== b[id].start || a[id].end !== b[id].end) changed += 1;
+  });
+  Object.keys(a).forEach((id) => { if (!b[id]) removed += 1; });
+  return { changed, added, removed };
+}
+
 // Portfolio roll-up of schedule slip across a set of tasks.
 export function scheduleVariance(tasks, baseline) {
   if (!baseline) return null;

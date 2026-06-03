@@ -11,7 +11,7 @@
 
 import {
   TRADES, STATUSES, STATUS_ORDER, Dates,
-  seedState, makeTask, applyTaskPatch, normalizeState, SCHEMA_VERSION,
+  seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId, SCHEMA_VERSION,
 } from './seed.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
@@ -331,35 +331,58 @@ class Store {
     return full;
   }
 
-  // ---- baseline (planned vs. actual) ----
-  saveBaseline() {
+  // ---- baseline history (planned vs. actual) ----
+  get baselines() { return this.state.baselines || []; }
+
+  saveBaseline(label) {
     if (!this.canBaseline()) { this._notify('Saving a baseline requires all-project access.', 'warn'); return; }
+    if (!Array.isArray(this.state.baselines)) this.state.baselines = this.state.baseline ? [this.state.baseline] : [];
     const snap = {
-      label: 'Baseline', savedAt: Dates.today(), savedBy: this.user,
+      id: nextBaselineId(this.state.baselines),
+      label: (label || '').trim() || ('Baseline ' + (this.state.baselines.length + 1)),
+      savedAt: Dates.today(), savedBy: this.user,
       tasks: Object.fromEntries(this.state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
     };
+    this.state.baselines.push(snap);
     this.state.baseline = snap;
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
-      api('POST', '/baseline', { savedBy: this.user })
-        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+      api('POST', '/baseline', { label: snap.label })
+        .then(({ data, etag }) => { if (data && data.id) { snap.id = data.id; } this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
         .catch((err) => this._writeFailed(err));
     }
-    this._notify('Baseline saved — variance is now measured against today’s plan.', 'info');
+    this._notify(`Baseline “${snap.label}” saved.`, 'info');
   }
 
-  clearBaseline() {
-    if (!this.canBaseline()) { this._notify('Clearing a baseline requires all-project access.', 'warn'); return; }
-    this.state.baseline = null;
+  activateBaseline(id) {
+    if (!this.canBaseline()) { this._notify('Switching baselines requires all-project access.', 'warn'); return; }
+    this.state.baseline = id === 'none' ? null : (this.state.baselines || []).find((b) => b.id === id) || null;
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
-      api('DELETE', '/baseline')
+      api('POST', '/baseline/' + id + '/activate')
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
         .catch((err) => this._writeFailed(err));
     }
   }
+
+  deleteBaseline(id) {
+    if (!this.canBaseline()) { this._notify('Deleting a baseline requires all-project access.', 'warn'); return; }
+    this.state.baselines = (this.state.baselines || []).filter((b) => b.id !== id);
+    if (this.state.baseline && this.state.baseline.id === id) {
+      this.state.baseline = this.state.baselines[this.state.baselines.length - 1] || null;
+    }
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/baseline/' + id)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
+  }
+
+  clearBaseline() { this.activateBaseline('none'); }
 
   deleteTask(id) {
     const target = this.task(id);
@@ -413,56 +436,6 @@ class Store {
 export const store = new Store();
 export { SCHEMA_VERSION };
 
-// ============================================================================
-//  Critical Path Method (CPM) — forward/backward pass over the dependency DAG.
-//  Returns a Set of task ids on the critical path (zero total float).
-// ============================================================================
-export function computeCriticalPath(tasks) {
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  const dur = (t) => Math.max(1, Dates.diffDays(t.start, t.end) + 1);
-
-  const indeg = new Map(tasks.map((t) => [t.id, 0]));
-  tasks.forEach((t) => t.dependencies.forEach((d) => {
-    if (byId.has(d)) indeg.set(t.id, (indeg.get(t.id) || 0) + 1);
-  }));
-  const succ = new Map(tasks.map((t) => [t.id, []]));
-  tasks.forEach((t) => t.dependencies.forEach((d) => {
-    if (byId.has(d)) succ.get(d).push(t.id);
-  }));
-  const queue = tasks.filter((t) => indeg.get(t.id) === 0).map((t) => t.id);
-  const order = [];
-  const indegW = new Map(indeg);
-  while (queue.length) {
-    const id = queue.shift();
-    order.push(id);
-    succ.get(id).forEach((s) => {
-      indegW.set(s, indegW.get(s) - 1);
-      if (indegW.get(s) === 0) queue.push(s);
-    });
-  }
-
-  const ES = new Map(), EF = new Map();
-  order.forEach((id) => {
-    const t = byId.get(id);
-    const deps = t.dependencies.filter((d) => byId.has(d));
-    const es = deps.length ? Math.max(...deps.map((d) => EF.get(d))) : 0;
-    ES.set(id, es);
-    EF.set(id, es + dur(t));
-  });
-  const projectEnd = Math.max(0, ...[...EF.values()]);
-
-  const LS = new Map(), LF = new Map();
-  [...order].reverse().forEach((id) => {
-    const t = byId.get(id);
-    const sc = succ.get(id);
-    const lf = sc.length ? Math.min(...sc.map((s) => LS.get(s))) : projectEnd;
-    LF.set(id, lf);
-    LS.set(id, lf - dur(t));
-  });
-
-  const critical = new Set();
-  order.forEach((id) => {
-    if (Math.abs((LS.get(id) || 0) - (ES.get(id) || 0)) < 0.5) critical.add(id);
-  });
-  return critical;
-}
+// CPM lives in its own pure module (shared with leveling.js); re-export so
+// existing consumers can keep importing it from data.js.
+export { computeCriticalPath } from './cpm.js';

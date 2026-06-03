@@ -155,7 +155,7 @@ export function seedState() {
   // the plan as the baseline, then push a few work packages out so the variance
   // view + Gantt ghost bars show meaningful slip out of the box.
   const baseline = {
-    label: 'Original Plan', savedAt: start, savedBy: 'Planning',
+    id: 'b1', label: 'Original Plan', savedAt: start, savedBy: 'Planning',
     tasks: Object.fromEntries(tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost }])),
   };
   const drift = { t4: 2, t5: 3, t7: 4, t9: 3, t10: 6, t11: 4, t16: 3, t22: 4, t23: 7, t24: 5 };
@@ -164,7 +164,15 @@ export function seedState() {
     if (d) { t.start = Dates.addDays(t.start, d); t.end = Dates.addDays(t.end, d); }
   });
 
-  return { projects, tasks, crews, baseline, version: SCHEMA_VERSION, rev: 1 };
+  // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
+  // is the full history. They share the same object reference for the active one.
+  return { projects, tasks, crews, baseline, baselines: [baseline], version: SCHEMA_VERSION, rev: 1 };
+}
+
+// Next baseline id for a state (b1, b2, …).
+export function nextBaselineId(baselines) {
+  const max = Math.max(0, ...(baselines || []).map((b) => +String(b.id).slice(1) || 0));
+  return 'b' + (max + 1);
 }
 
 // --- Pure helpers shared by client + server --------------------------------
@@ -212,6 +220,17 @@ export function normalizeState(state) {
   if (!state || !Array.isArray(state.tasks)) return seedState();
   if (state.rev == null) state.rev = 1;
   if (state.baseline === undefined) state.baseline = null;
+  // Migrate single-baseline states to the baselines[] history model.
+  if (!Array.isArray(state.baselines)) {
+    state.baselines = state.baseline ? [state.baseline] : [];
+  }
+  state.baselines.forEach((b, i) => { if (!b.id) b.id = 'b' + (i + 1); if (!b.label) b.label = 'Baseline ' + (i + 1); });
+  // Point the active baseline at its entry in the history (by id) when possible.
+  if (state.baseline) {
+    if (!state.baseline.id) state.baseline.id = state.baselines[0] && state.baselines[0].id;
+    const match = state.baselines.find((b) => b.id === state.baseline.id);
+    state.baseline = match || state.baseline;
+  }
   state.tasks.forEach((t) => {
     if (t.cost == null) t.cost = 0;
     if (t.actualCost == null) t.actualCost = 0;

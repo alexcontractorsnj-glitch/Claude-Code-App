@@ -17,7 +17,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedState, makeTask, applyTaskPatch, normalizeState } from './src/js/seed.js';
+import { seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId } from './src/js/seed.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -273,22 +273,44 @@ async function handleApi(req, res, urlPath) {
     }
 
     if (resource === 'baseline') {
-      if (method === 'POST') {                 // snapshot current schedule as the plan
-        state.baseline = {
-          label: 'Baseline', savedAt: new Date().toISOString().slice(0, 10),
-          savedBy: actor.name,
+      if (!Array.isArray(state.baselines)) state.baselines = state.baseline ? [state.baseline] : [];
+
+      if (method === 'POST' && !id) {          // capture a new baseline → make it active
+        const body = await readBody(req).catch(() => ({}));
+        const snap = {
+          id: nextBaselineId(state.baselines),
+          label: (body.label || '').trim() || ('Baseline ' + (state.baselines.length + 1)),
+          savedAt: new Date().toISOString().slice(0, 10), savedBy: actor.name,
           tasks: Object.fromEntries(state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
         };
+        state.baselines.push(snap);
+        state.baseline = snap;
         bump();
         await persistState();
-        logAudit(actor, 'baseline.save', { detail: `${state.tasks.length} tasks captured` });
+        logAudit(actor, 'baseline.save', { targetName: snap.label, detail: `${state.tasks.length} tasks captured` });
+        return send(res, 200, snap, { ETag: etag() });
+      }
+      if (method === 'POST' && id && sub === 'activate') {   // switch the comparison baseline
+        if (id === 'none') { state.baseline = null; }
+        else {
+          const b = state.baselines.find((x) => x.id === id);
+          if (!b) return send(res, 404, { error: 'baseline not found' });
+          state.baseline = b;
+        }
+        bump();
+        await persistState();
+        logAudit(actor, 'baseline.activate', { targetId: id, detail: state.baseline ? state.baseline.label : 'none' });
         return send(res, 200, state.baseline, { ETag: etag() });
       }
-      if (method === 'DELETE') {
-        state.baseline = null;
+      if (method === 'DELETE' && id) {         // remove a baseline from history
+        const removed = state.baselines.find((x) => x.id === id);
+        state.baselines = state.baselines.filter((x) => x.id !== id);
+        if (state.baseline && state.baseline.id === id) {
+          state.baseline = state.baselines[state.baselines.length - 1] || null;
+        }
         bump();
         await persistState();
-        logAudit(actor, 'baseline.clear');
+        logAudit(actor, 'baseline.delete', { targetName: removed ? removed.label : id });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }

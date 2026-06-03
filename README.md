@@ -49,8 +49,9 @@ views changes.
 | `PATCH /api/tasks/:id` | update (progress/status coherence applied server-side) |
 | `DELETE /api/tasks/:id` | delete + strip dangling dependency refs |
 | `POST /api/reset` | reseed the sample data |
-| `POST /api/baseline` | snapshot the current schedule as the baseline |
-| `DELETE /api/baseline` | clear the baseline |
+| `POST /api/baseline` | capture a new baseline (becomes active) |
+| `POST /api/baseline/:id/activate` | switch the active baseline (`/none` = off) |
+| `DELETE /api/baseline/:id` | delete a baseline from history |
 | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
 | `GET /api/audit` | recent activity log (write role) |
@@ -91,8 +92,15 @@ Snapshot the current schedule as a **baseline** (the toolbar's *Save Baseline* /
 - The task dialog shows that task's baseline dates and finish variance.
 
 The demo ships with a baseline already captured and a few work packages drifted,
-so the variance is visible immediately. `POST /api/baseline` snapshots server-side;
-`DELETE /api/baseline` clears it.
+so the variance is visible immediately.
+
+**Baseline history** — you can keep **multiple** baselines (e.g. *Original Plan*,
+*Rev B — after client changes*) and switch which one variance compares against
+from the **Baselines** panel. Each row shows when/who saved it and how many tasks
+were **re-planned versus the previous revision**, so you can see how the plan
+itself evolved. `POST /api/baseline` captures a new one (and makes it active),
+`POST /api/baseline/:id/activate` switches the active baseline (`/none` to turn
+comparison off), and `DELETE /api/baseline/:id` removes one.
 
 ### Authentication & per-user permissions
 
@@ -180,7 +188,15 @@ in dependency order and gives each crew one job at a time, pushing tasks *later*
 as needed (never earlier, dependencies preserved). It shows a **preview** of
 every proposed shift (old → new dates, +days) before you apply; applying writes
 the changes through the normal PATCH path (so concurrency, scope and the audit
-log all still apply). The result is a conflict-free schedule.
+log all still apply). Options refine the strategy live:
+
+- **Protect critical path** — critical tasks keep crew priority so non-critical
+  work absorbs the delay and the end date is protected.
+- **Freeze started work** — done / in-progress tasks are pinned and others
+  schedule around them.
+- **Horizon** (7/14/30/60d / ∞) — caps how far crew-leveling pushes a task; the
+  preview shows any conflicts that remain within the cap. (Dependencies always
+  win over the horizon, so a chain can still compound past it.)
 
 ### Earned-Value Management (CPI/SPI)
 
@@ -226,9 +242,10 @@ src/
   js/
     seed.js             # shared domain core: model, seed, date math, task rules,
                         #   normalizeState migration (imported by browser AND server)
+    cpm.js              # pure critical-path method (shared by data + leveling)
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
-    variance.js         # pure baseline-vs-actual schedule variance
-    leveling.js         # pure resource leveling: conflicts, lane packing, auto-level
+    variance.js         # pure baseline variance + baseline-to-baseline compare
+    leveling.js         # pure resource leveling: conflicts, lane packing, auto-level (+options)
     data.js             # browser store: identity, mutations + attribution,
                         #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
@@ -252,10 +269,10 @@ zero total float are flagged), not hard-coded.
 
 ## Roadmap (next sprints)
 
-- Baseline history (keep multiple baselines, compare across revisions)
 - Exportable audit log (CSV) + global activity filters
-- Auto-level options (limit horizon, prioritise critical-path tasks)
 - Notifications (email/webhook) on milestone slips or blocked tasks
+- Schedule-of-values / progress billing tied to earned value
+- Mobile-friendly field view for crews
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
@@ -265,4 +282,5 @@ zero total float are flagged), not hard-coded.
 ✅ authentication (scrypt + sessions) & role-based permissions ·
 ✅ project-scoped permissions + in-app audit log ·
 ✅ resource leveling + per-task history timeline ·
-✅ one-click auto-leveling with preview.
+✅ one-click auto-leveling with options (critical-path protection, freeze, horizon) ·
+✅ baseline history (multiple baselines, compare across revisions).

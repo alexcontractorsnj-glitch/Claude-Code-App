@@ -10,8 +10,8 @@ import { renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderCost } from './views/cost.js';
 import { renderResources } from './views/resources.js';
-import { scheduleVariance, taskVariance } from './variance.js';
-import { levelingSummary, assignmentConflicts, proposeLeveling } from './leveling.js';
+import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
+import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 
 const ctx = {
   view: 'gantt',
@@ -194,20 +194,82 @@ function identityChip(root) {
   ]);
 }
 
-// Baseline save/clear control with the saved-date indicator. Editing requires
-// write access; read-only roles just see the baseline tag.
+// Baseline control: shows the active baseline, opens the history panel, and
+// (for unrestricted writers) saves a new baseline. Read-only roles see the tag.
 function baselineControls() {
   const b = store.baseline;
   const rw = store.canBaseline();
-  if (!b) {
+  const count = store.baselines.length;
+  if (!b && !count) {
     return rw ? el('button', { class: 'btn ghost', title: 'Snapshot the current schedule as the plan to measure slip against',
-      onclick: () => store.saveBaseline() }, '📌 Save Baseline') : null;
+      onclick: () => saveBaselinePrompt() }, '📌 Save Baseline') : null;
   }
   return el('div', { class: 'baseline-ctl' }, [
-    el('span', { class: 'baseline-tag', title: `Baseline by ${b.savedBy || 'Unknown'}` }, `Baseline · ${Dates.fmt(b.savedAt)}`),
-    rw ? el('button', { class: 'btn ghost sm', onclick: () => store.saveBaseline() }, 'Re-baseline') : null,
-    rw ? el('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Clear the saved baseline?')) store.clearBaseline(); } }, 'Clear') : null,
+    el('button', { class: 'baseline-tag' + (rw ? ' clickable' : ''), title: b ? `Active baseline by ${b.savedBy || 'Unknown'} · click for history` : 'No active baseline',
+      onclick: rw ? () => openBaselinePanel() : null },
+      b ? `Baseline: ${b.label}${count > 1 ? ` (${count})` : ''} ▾` : `No baseline · ${count} saved ▾`),
+    rw ? el('button', { class: 'btn ghost sm', title: 'Capture a new baseline from the current schedule', onclick: () => saveBaselinePrompt() }, '+ New') : null,
   ]);
+}
+
+function saveBaselinePrompt() {
+  const label = window.prompt('Name this baseline (e.g. “Rev B — after client changes”):', 'Baseline ' + (store.baselines.length + 1));
+  if (label != null) store.saveBaseline(label);
+}
+
+// Baseline history panel: activate / delete / save, with plan-drift vs the
+// previous revision so you can see how the plan itself evolved.
+function openBaselinePanel() {
+  if (!store.canBaseline()) return;
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const list = el('div', { class: 'bl-list' });
+
+  function render() {
+    clear(list);
+    const bls = store.baselines;
+    const activeId = store.baseline && store.baseline.id;
+    // "No comparison" row
+    list.appendChild(el('label', { class: 'bl-row' }, [
+      radio(!activeId, () => { store.activateBaseline('none'); render(); renderHeader(document.getElementById('app')); renderActiveView(); }),
+      el('div', { class: 'bl-meta' }, [el('div', { class: 'bl-label' }, 'No comparison'), el('div', { class: 'bl-sub' }, 'Hide baseline / variance')]),
+    ]));
+    bls.forEach((bl, i) => {
+      const prev = i > 0 ? bls[i - 1] : null;
+      const drift = prev ? compareBaselines(prev, bl) : null;
+      list.appendChild(el('label', { class: 'bl-row' + (bl.id === activeId ? ' active' : '') }, [
+        radio(bl.id === activeId, () => { store.activateBaseline(bl.id); render(); renderHeader(document.getElementById('app')); renderActiveView(); }),
+        el('div', { class: 'bl-meta' }, [
+          el('div', { class: 'bl-label' }, bl.label),
+          el('div', { class: 'bl-sub' }, `${Dates.fmtLong(bl.savedAt)} · ${bl.savedBy || 'Unknown'} · ${Object.keys(bl.tasks || {}).length} tasks${drift ? ` · ${drift.changed} re-planned vs prev` : ''}`),
+        ]),
+        el('button', { class: 'btn ghost sm', onclick: (e) => { e.preventDefault(); if (confirm(`Delete baseline “${bl.label}”?`)) { store.deleteBaseline(bl.id); render(); renderHeader(document.getElementById('app')); renderActiveView(); } } }, 'Delete'),
+      ]));
+    });
+    if (!bls.length) list.appendChild(el('div', { class: 'empty' }, 'No baselines saved yet.'));
+  }
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Baselines'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [
+      el('div', { class: 'bl-intro' }, 'Variance (Gantt ghost bars, KPIs) is measured against the selected baseline. Switch the active baseline to compare progress against a different revision of the plan.'),
+      list,
+    ]),
+    el('div', { class: 'modal-foot' }, [el('span'), el('div', { class: 'foot-right' }, [
+      el('button', { class: 'btn ghost', onclick: close }, 'Close'),
+      el('button', { class: 'btn primary', onclick: () => { saveBaselinePrompt(); setTimeout(render, 50); } }, '+ New baseline'),
+    ])]),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  render();
+
+  function radio(on, onPick) {
+    const r = el('span', { class: 'bl-radio' + (on ? ' on' : ''), onclick: (e) => { e.preventDefault(); onPick(); } });
+    return r;
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
 }
 
 // Relative "time ago" for attribution timestamps.
@@ -392,13 +454,53 @@ function openEditor(taskId) {
   document.addEventListener('keydown', onKey);
 }
 
-// --- Auto-leveling preview --------------------------------------------------
+// --- Auto-leveling preview (with options) -----------------------------------
+const HORIZONS = [['∞', Infinity], ['7d', 7], ['14d', 14], ['30d', 30], ['60d', 60]];
+
 function openLevelPreview() {
   if (!store.canBaseline()) return;
-  const changes = proposeLeveling(store.tasks('all'));
+  const opts = { protectCritical: false, freezeStarted: false, maxPushDays: Infinity };
   const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const bodyWrap = el('div', { class: 'modal-body' });
+  const footRight = el('div', { class: 'foot-right' });
+  let changes = [];
 
-  const rows = changes.map((c) => {
+  function recompute() {
+    const tasks = store.tasks('all');
+    changes = proposeLeveling(tasks, opts);
+    const residual = detectConflicts(applyChanges(tasks, changes)).length;
+
+    clear(bodyWrap);
+    bodyWrap.appendChild(optionsBar());
+    if (!changes.length) {
+      bodyWrap.appendChild(el('div', { class: 'empty' }, 'No changes needed with these options — schedule is conflict-free.'));
+    } else {
+      bodyWrap.appendChild(el('div', { class: 'level-intro' }, [
+        `${changes.length} task${changes.length === 1 ? '' : 's'} pushed later (dependencies preserved; nothing moves earlier). `,
+        el('span', { class: residual ? 'level-resid bad' : 'level-resid good' },
+          residual ? `${residual} conflict${residual === 1 ? '' : 's'} remain within the horizon` : 'all crew conflicts resolved ✓'),
+      ]));
+      bodyWrap.appendChild(el('div', { class: 'level-list' }, changes.map(rowFor)));
+    }
+    clear(footRight);
+    footRight.append(
+      el('button', { class: 'btn ghost', onclick: close }, changes.length ? 'Cancel' : 'Close'),
+      changes.length ? el('button', { class: 'btn primary', onclick: apply }, `Apply ${changes.length} shift${changes.length === 1 ? '' : 's'}`) : null,
+    );
+  }
+
+  function optionsBar() {
+    const horizonSel = el('select', { class: 'select sm', onchange: (e) => { opts.maxPushDays = +e.target.value === 0 ? Infinity : +e.target.value; recompute(); } },
+      HORIZONS.map(([lbl, v]) => el('option', { value: v === Infinity ? 0 : v }, 'Horizon ' + lbl)));
+    horizonSel.value = opts.maxPushDays === Infinity ? 0 : opts.maxPushDays;
+    return el('div', { class: 'level-opts' }, [
+      toggle('Protect critical path', opts.protectCritical, (v) => { opts.protectCritical = v; recompute(); }),
+      toggle('Freeze started work', opts.freezeStarted, (v) => { opts.freezeStarted = v; recompute(); }),
+      horizonSel,
+    ]);
+  }
+
+  function rowFor(c) {
     const proj = store.project(c.projectId);
     return el('div', { class: 'level-row' }, [
       el('div', { class: 'level-task' }, [
@@ -410,31 +512,21 @@ function openLevelPreview() {
       el('span', { class: 'level-dates new' }, `${Dates.fmt(c.newStart)}→${Dates.fmt(c.newEnd)}`),
       el('span', { class: 'level-delta' }, `+${c.deltaDays}d`),
     ]);
-  });
-
-  const body = changes.length
-    ? el('div', {}, [
-        el('div', { class: 'level-intro' }, `${changes.length} task${changes.length === 1 ? '' : 's'} will be pushed later to give each crew one job at a time (dependencies preserved; nothing moves earlier).`),
-        el('div', { class: 'level-list' }, rows),
-      ])
-    : el('div', { class: 'empty' }, 'No changes needed — the schedule is already conflict-free.');
-
-  const applyBtn = changes.length ? el('button', { class: 'btn primary', onclick: apply }, `Apply ${changes.length} shift${changes.length === 1 ? '' : 's'}`) : null;
+  }
 
   const modal = el('div', { class: 'modal' }, [
-    el('div', { class: 'modal-head' }, [el('h2', {}, 'Auto-level — proposed changes'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
-    el('div', { class: 'modal-body' }, body),
-    el('div', { class: 'modal-foot' }, [el('span'), el('div', { class: 'foot-right' }, [
-      el('button', { class: 'btn ghost', onclick: close }, changes.length ? 'Cancel' : 'Close'),
-      applyBtn,
-    ])]),
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Auto-level'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    bodyWrap,
+    el('div', { class: 'modal-foot' }, [el('span'), footRight]),
   ]);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+  recompute();
 
   function apply() {
+    const applied = changes.length;
     changes.forEach((c) => store.updateTask(c.id, { start: c.newStart, end: c.newEnd }));
-    store._notify(`Auto-leveled ${changes.length} task${changes.length === 1 ? '' : 's'} — crew conflicts resolved.`, 'info');
+    store._notify(`Auto-leveled ${applied} task${applied === 1 ? '' : 's'}.`, 'info');
     close();
   }
   function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
@@ -447,7 +539,9 @@ const ACTION_META = {
   'task.create': { icon: '＋', label: 'created' },
   'task.update': { icon: '✎', label: 'updated' },
   'task.delete': { icon: '🗑', label: 'deleted' },
-  'baseline.save': { icon: '📌', label: 'saved a baseline' },
+  'baseline.save': { icon: '📌', label: 'saved baseline' },
+  'baseline.activate': { icon: '◉', label: 'switched active baseline to' },
+  'baseline.delete': { icon: '🗑', label: 'deleted baseline' },
   'baseline.clear': { icon: '✕', label: 'cleared the baseline' },
   'schedule.reset': { icon: '↺', label: 'reset the schedule' },
   'user.create': { icon: '👤', label: 'created user' },
