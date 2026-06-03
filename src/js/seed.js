@@ -175,9 +175,21 @@ export function seedState() {
     { id: 'd6', kind: 'rfi', projectId: 'p3', taskId: 't23', number: 'RFI-001', title: 'Existing MEP routing in chase 2', status: 'open', court: 'MEP Engineer', due: Dates.addDays(t0i, -5), body: 'As-builts disagree with field — confirm duct routing.', response: '', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -7), updatedBy: null, updatedAt: null, rev: 1 },
   ];
 
+  // --- Seed change orders + a few daily field reports ----------------------
+  const changeOrders = [
+    { id: 'co1', projectId: 'p1', number: 'CO-001', title: 'Added rooftop screen wall', description: 'Owner-requested architectural screen at mechanical units.', amount: 185000, days: 5, status: 'approved', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -18), approvedBy: 'System Admin', approvedAt: Dates.addDays(t0i, -10), rev: 2 },
+    { id: 'co2', projectId: 'p1', number: 'CO-002', title: 'Unforeseen rock excavation', description: 'Differing site condition — rock at footings, grid C–E.', amount: 92000, days: 8, status: 'pending', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -3), approvedBy: null, approvedAt: null, rev: 1 },
+    { id: 'co3', projectId: 'p2', number: 'CO-001', title: 'Dock leveler upgrade credit', description: 'Value-engineered leveler model — credit to owner.', amount: -24000, days: 0, status: 'approved', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -14), approvedBy: 'System Admin', approvedAt: Dates.addDays(t0i, -9), rev: 2 },
+  ];
+  const reports = [
+    { id: 'fr1', projectId: 'p1', date: Dates.addDays(t0i, -1), weather: 'Clear', tempLow: 52, tempHigh: 74, manpower: 18, workPerformed: 'Foundation pour grid A–C; stripped forms at grid D.', deliveries: 'Rebar (2 loads), formwork lumber.', delays: '', notes: 'Inspector on site AM; passed footing inspection.', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -1), rev: 1 },
+    { id: 'fr2', projectId: 'p1', date: Dates.today(), weather: 'Rain', tempLow: 48, tempHigh: 60, manpower: 9, workPerformed: 'Limited work — cure & protect fresh concrete.', deliveries: '', delays: 'Rain delay PM; pump truck rescheduled.', notes: '', createdBy: 'A. Whitfield', createdAt: Dates.today(), rev: 1 },
+    { id: 'fr3', projectId: 'p2', date: Dates.today(), weather: 'Windy', tempLow: 41, tempHigh: 58, manpower: 22, workPerformed: 'Tilt-up panel casting beds 4–7; embeds set.', deliveries: 'Concrete (6 trucks), embed plates.', delays: '', notes: 'High wind watch — crane ops monitored.', createdBy: 'P. Sandoval', createdAt: Dates.today(), rev: 1 },
+  ];
+
   // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
   // is the full history. They share the same object reference for the active one.
-  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, version: SCHEMA_VERSION, rev: 1 };
+  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // Next baseline id for a state (b1, b2, …).
@@ -232,6 +244,8 @@ export function normalizeState(state) {
   if (state.rev == null) state.rev = 1;
   if (!Array.isArray(state.payApps)) state.payApps = [];
   if (!Array.isArray(state.docs)) state.docs = [];
+  if (!Array.isArray(state.changeOrders)) state.changeOrders = [];
+  if (!Array.isArray(state.reports)) state.reports = [];
   if (state.baseline === undefined) state.baseline = null;
   // Migrate single-baseline states to the baselines[] history model.
   if (!Array.isArray(state.baselines)) {

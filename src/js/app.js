@@ -12,7 +12,10 @@ import { renderCost } from './views/cost.js';
 import { renderResources } from './views/resources.js';
 import { renderBilling } from './views/billing.js';
 import { renderDocuments } from './views/documents.js';
+import { renderField } from './views/field.js';
 import { DOC_KINDS } from './docs.js';
+import { CO_STATUSES } from './changeorders.js';
+import { WEATHER } from './fieldreports.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -37,6 +40,8 @@ const ctx = {
   canEditProject: (pid) => store.canEditProject(pid),
   setProject: (pid) => { ctx.projectId = pid; ctx.billingApp = null; renderHeaderAndView(); },
   openDoc: (id, kind) => openDocEditor(id, kind),
+  openCo: (id, projectId) => openCoEditor(id, projectId),
+  openReport: (id) => openReportEditor(id),
   billingApp: null,
 };
 
@@ -53,6 +58,7 @@ const VIEWS = {
   cost: { label: 'Cost / EVM', icon: '▥', render: renderCost },
   billing: { label: 'Billing', icon: '＄', render: renderBilling },
   documents: { label: 'Documents', icon: '✉', render: renderDocuments },
+  field: { label: 'Field', icon: '☰', render: renderField },
 };
 
 let viewMount; // the area where the active view renders
@@ -612,7 +618,114 @@ const ACTION_META = {
   'doc.create': { icon: '✉', label: 'created' },
   'doc.update': { icon: '✎', label: 'updated' },
   'doc.delete': { icon: '🗑', label: 'deleted' },
+  'co.create': { icon: '±', label: 'raised change order' },
+  'co.update': { icon: '✎', label: 'updated change order' },
+  'co.delete': { icon: '🗑', label: 'deleted change order' },
+  'report.create': { icon: '☰', label: 'filed report' },
+  'report.update': { icon: '✎', label: 'updated report' },
+  'report.delete': { icon: '🗑', label: 'deleted report' },
 };
+
+// --- Change-order editor ----------------------------------------------------
+function openCoEditor(coId, projectId) {
+  const isNew = coId == null;
+  const editable = store.editableProjects();
+  if (isNew && (!store.can('write') || !editable.length)) return;
+  const c = isNew
+    ? { projectId: projectId || (editable[0] && editable[0].id), title: '', description: '', amount: 0, days: 0, status: 'draft' }
+    : { ...store.changeOrders.find((x) => x.id === coId) };
+  const RW = isNew ? store.can('write') : store.canEditProject(c.projectId);
+  const projOptions = isNew ? editable : store.projects.filter((p) => p.id === c.projectId || store.canEditProject(p.id));
+
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const f = {};
+  const field = (label, input) => el('div', { class: 'form-field' }, [el('label', {}, label), input]);
+  f.title = el('input', { class: 'input', type: 'text', value: c.title || '', placeholder: 'e.g. Added rooftop screen wall' });
+  f.project = el('select', { class: 'select' }, projOptions.map((p) => el('option', { value: p.id }, p.name))); f.project.value = c.projectId;
+  f.status = el('select', { class: 'select' }, CO_STATUSES.map((s) => el('option', { value: s }, s))); f.status.value = c.status;
+  f.amount = el('input', { class: 'input', type: 'number', step: '1000', value: c.amount || 0 });
+  f.days = el('input', { class: 'input', type: 'number', step: '1', value: c.days || 0 });
+  f.description = el('textarea', { class: 'input', rows: '3', placeholder: 'Scope / justification' }, c.description || '');
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, (isNew ? 'New Change Order' : 'Change Order · ' + c.number)), !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null, el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [
+      field('Title', f.title),
+      el('div', { class: 'form-row' }, [field('Project', f.project), field('Status', f.status)]),
+      el('div', { class: 'form-row' }, [field('Amount ($, − for credit)', f.amount), field('Schedule impact (days)', f.days)]),
+      field('Description', f.description),
+      (!isNew && c.approvedBy) ? el('div', { class: 'meta-panel' }, el('div', { class: 'meta-row' }, [el('span', { class: 'meta-k' }, 'Approved by'), el('span', { class: 'meta-v' }, c.approvedBy)])) : null,
+    ]),
+    el('div', { class: 'modal-foot' }, [
+      (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this change order?')) { store.deleteChangeOrder(coId); close(); renderActiveView(); } } }, 'Delete') : el('span'),
+      el('div', { class: 'foot-right' }, [el('button', { class: 'btn ghost', onclick: close }, RW ? 'Cancel' : 'Close'), RW ? el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create' : 'Save') : null]),
+    ]),
+  ]);
+  overlay.appendChild(modal); document.body.appendChild(overlay);
+  if (!RW) modal.querySelectorAll('input, select, textarea').forEach((n) => { n.disabled = true; });
+  setTimeout(() => { if (RW) f.title.focus(); }, 30);
+
+  async function save() {
+    const data = { projectId: f.project.value, title: f.title.value.trim() || 'Change Order', description: f.description.value, amount: +f.amount.value || 0, days: +f.days.value || 0, status: f.status.value };
+    if (isNew) await store.createChangeOrder(data); else store.updateChangeOrder(coId, data);
+    close(); renderActiveView();
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
+
+// --- Daily field report editor ----------------------------------------------
+function openReportEditor(repId) {
+  const isNew = repId == null;
+  const editable = store.editableProjects();
+  if (isNew && (!store.can('write') || !editable.length)) return;
+  const r = isNew
+    ? { projectId: (ctx.projectId !== 'all' && editable.some((p) => p.id === ctx.projectId)) ? ctx.projectId : (editable[0] && editable[0].id), date: Dates.today(), weather: 'Clear', tempLow: '', tempHigh: '', manpower: 0, workPerformed: '', deliveries: '', delays: '', notes: '' }
+    : { ...store.reports.find((x) => x.id === repId) };
+  const RW = isNew ? store.can('write') : store.canEditProject(r.projectId);
+  const projOptions = isNew ? editable : store.projects.filter((p) => p.id === r.projectId || store.canEditProject(p.id));
+
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const f = {};
+  const field = (label, input) => el('div', { class: 'form-field' }, [el('label', {}, label), input]);
+  f.project = el('select', { class: 'select' }, projOptions.map((p) => el('option', { value: p.id }, p.name))); f.project.value = r.projectId;
+  f.date = el('input', { class: 'input', type: 'date', value: r.date });
+  f.weather = el('select', { class: 'select' }, WEATHER.map((w) => el('option', { value: w }, w))); f.weather.value = r.weather;
+  f.tempLow = el('input', { class: 'input', type: 'number', value: r.tempLow ?? '', placeholder: 'low °' });
+  f.tempHigh = el('input', { class: 'input', type: 'number', value: r.tempHigh ?? '', placeholder: 'high °' });
+  f.manpower = el('input', { class: 'input', type: 'number', min: '0', value: r.manpower || 0 });
+  f.workPerformed = el('textarea', { class: 'input', rows: '2', placeholder: 'Work performed' }, r.workPerformed || '');
+  f.deliveries = el('textarea', { class: 'input', rows: '2', placeholder: 'Deliveries' }, r.deliveries || '');
+  f.delays = el('textarea', { class: 'input', rows: '2', placeholder: 'Delays / issues' }, r.delays || '');
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, isNew ? 'New Daily Report' : 'Daily Report · ' + Dates.fmt(r.date)), !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null, el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [
+      el('div', { class: 'form-row' }, [field('Project', f.project), field('Date', f.date)]),
+      el('div', { class: 'form-row' }, [field('Weather', f.weather), field('Temp low', f.tempLow), field('Temp high', f.tempHigh), field('Manpower', f.manpower)]),
+      field('Work performed', f.workPerformed),
+      field('Deliveries', f.deliveries),
+      field('Delays / issues', f.delays),
+    ]),
+    el('div', { class: 'modal-foot' }, [
+      (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this report?')) { store.deleteReport(repId); close(); renderActiveView(); } } }, 'Delete') : el('span'),
+      el('div', { class: 'foot-right' }, [el('button', { class: 'btn ghost', onclick: close }, RW ? 'Cancel' : 'Close'), RW ? el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create' : 'Save') : null]),
+    ]),
+  ]);
+  overlay.appendChild(modal); document.body.appendChild(overlay);
+  if (!RW) modal.querySelectorAll('input, select, textarea').forEach((n) => { n.disabled = true; });
+  setTimeout(() => { if (RW) f.workPerformed.focus(); }, 30);
+
+  async function save() {
+    const data = { projectId: f.project.value, date: f.date.value, weather: f.weather.value, tempLow: f.tempLow.value, tempHigh: f.tempHigh.value, manpower: +f.manpower.value || 0, workPerformed: f.workPerformed.value, deliveries: f.deliveries.value, delays: f.delays.value };
+    if (isNew) await store.createReport(data); else store.updateReport(repId, data);
+    close(); renderActiveView();
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
 
 // --- Submittal / RFI editor -------------------------------------------------
 function openDocEditor(docId, presetKind) {

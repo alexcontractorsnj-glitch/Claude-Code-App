@@ -6,6 +6,7 @@
 // ============================================================================
 import { store, TRADES } from '../data.js';
 import { g703Rows, g702Summary, appsForProject, buildApplication } from '../billing.js';
+import { netApprovedAmount, coSummary, CO_TONE } from '../changeorders.js';
 import { el, clear, money, pct } from '../utils.js';
 
 function csvDownload(rows, name) {
@@ -56,7 +57,8 @@ export function renderBilling(mount, ctx) {
     preview = true;
   }
   const prevApp = preview ? null : apps[apps.indexOf(sel) - 1];
-  const summary = g702Summary(sel, prevApp);
+  const netCo = netApprovedAmount(store.changeOrders, project.id);
+  const summary = g702Summary(sel, prevApp, netCo);
   const rows = g703Rows(sel, prevApp);
 
   // ---- controls ----
@@ -83,10 +85,10 @@ export function renderBilling(mount, ctx) {
   // ---- G702 summary ----
   const card = (label, value, tone = '') => el('div', { class: 'evm-card ' + tone }, [el('div', { class: 'evm-label' }, label), el('div', { class: 'evm-value' }, value)]);
   view.appendChild(el('div', { class: 'evm-deck' }, [
-    card('Original Contract Sum', money(summary.contractSum)),
+    card('Original Contract', money(summary.originalContractSum)),
+    card('Net Change (CO)', (summary.netChangeByCO >= 0 ? '+' : '−') + money(Math.abs(summary.netChangeByCO)), summary.netChangeByCO ? (summary.netChangeByCO > 0 ? 'warn' : 'good') : ''),
+    card('Contract to Date', money(summary.contractSum)),
     card('Completed & Stored', money(summary.totalCompleted), 'good'),
-    card('Retainage', money(summary.totalRetainage)),
-    card('Less Previous Certs', money(summary.lessPrevious)),
     card('Current Payment Due', money(summary.currentPaymentDue), 'good'),
     card('Balance to Finish', money(summary.balanceToFinish)),
   ]));
@@ -107,6 +109,24 @@ export function renderBilling(mount, ctx) {
       el('tbody', {}, body),
     ])),
   ]));
+
+  // ---- Change orders ----
+  const cos = store.changeOrders.filter((c) => c.projectId === project.id).sort((a, b) => (a.number < b.number ? -1 : 1));
+  const coHead = el('div', { class: 'panel-head' }, [
+    el('span', {}, `Change Orders${cos.length ? ` (${coSummary(store.changeOrders, project.id).pending} pending)` : ''}`),
+    rw ? el('button', { class: 'btn ghost sm', onclick: () => ctx.openCo(null, project.id) }, '+ New CO') : null,
+  ]);
+  const coBody = cos.length ? el('div', { class: 'table-scroll' }, el('table', { class: 'evm-table' }, [
+    el('thead', {}, el('tr', {}, [el('th', {}, 'CO'), el('th', {}, 'Title'), el('th', { class: 'num' }, 'Amount'), el('th', { class: 'num' }, 'Days'), el('th', {}, 'Status')])),
+    el('tbody', {}, cos.map((c) => el('tr', { style: { cursor: 'pointer' }, onclick: () => ctx.openCo(c.id) }, [
+      el('td', {}, c.number),
+      el('td', {}, c.title),
+      el('td', { class: 'num ' + (c.amount < 0 ? 'neg' : '') }, (c.amount >= 0 ? '' : '−') + money(Math.abs(c.amount))),
+      el('td', { class: 'num' }, c.days ? '+' + c.days : '—'),
+      el('td', {}, el('span', { class: 'status-badge tone-' + (CO_TONE[c.status] || 'muted') }, c.status)),
+    ]))),
+  ])) : el('div', { class: 'docs-empty' }, 'No change orders.');
+  view.appendChild(el('div', { class: 'panel' }, [coHead, coBody]));
 
   mount.appendChild(view);
 }

@@ -49,14 +49,18 @@ export function g703Rows(app, prevApp) {
   });
 }
 
-// G702 summary block.
-export function g702Summary(app, prevApp) {
-  const contractSum = (app.lines || []).reduce((a, l) => a + l.scheduledValue, 0);
+// G702 summary block. `netCo` = net approved change-order value (adjusts the
+// contract sum to date), so the billing reflects the revised contract.
+export function g702Summary(app, prevApp, netCo = 0) {
+  const originalContractSum = (app.lines || []).reduce((a, l) => a + l.scheduledValue, 0);
+  const contractSum = originalContractSum + (netCo || 0);   // contract sum to date
   const totalCompleted = completedOf(app);
   const totalRetainage = retainageOf(app);
   const earnedLessRetainage = totalCompleted - totalRetainage;
   const lessPrevious = prevApp ? (completedOf(prevApp) - retainageOf(prevApp)) : 0;
   return {
+    originalContractSum,
+    netChangeByCO: netCo || 0,
     contractSum,
     totalCompleted,
     totalRetainage,

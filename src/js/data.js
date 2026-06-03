@@ -15,6 +15,8 @@ import {
 } from './seed.js';
 import { buildApplication, appsForProject } from './billing.js';
 import { makeDoc } from './docs.js';
+import { makeChangeOrder } from './changeorders.js';
+import { makeReport } from './fieldreports.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -468,6 +470,84 @@ class Store {
     if (this.mode === 'remote') {
       this._setSyncing(true);
       api('DELETE', '/docs/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- change orders ----
+  get changeOrders() { return this.state.changeOrders || []; }
+
+  async createChangeOrder(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.changeOrders)) this.state.changeOrders = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/changeorders', partial); this.rev = revOf(etag) ?? this.rev; this.state.changeOrders.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const co = makeChangeOrder(this.state.changeOrders, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    if (co.status === 'approved') { co.approvedBy = this.user; co.approvedAt = new Date().toISOString(); }
+    this.state.changeOrders.push(co); this._emit(); return co;
+  }
+
+  updateChangeOrder(id, patch) {
+    const co = this.changeOrders.find((c) => c.id === id);
+    if (!co || !this._guardProject(co.projectId)) return;
+    const wasApproved = co.status === 'approved';
+    Object.assign(co, patch);
+    if (co.status === 'approved' && !wasApproved) { co.approvedBy = this.user; co.approvedAt = new Date().toISOString(); }
+    if (co.status !== 'approved') { co.approvedBy = null; co.approvedAt = null; }
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/changeorders/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) co.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteChangeOrder(id) {
+    const co = this.changeOrders.find((c) => c.id === id);
+    if (co && !this._guardProject(co.projectId)) return;
+    this.state.changeOrders = this.changeOrders.filter((c) => c.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/changeorders/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- daily field reports ----
+  get reports() { return this.state.reports || []; }
+
+  async createReport(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.reports)) this.state.reports = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/reports', partial); this.rev = revOf(etag) ?? this.rev; this.state.reports.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const r = makeReport(this.state.reports, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.reports.push(r); this._emit(); return r;
+  }
+
+  updateReport(id, patch) {
+    const r = this.reports.find((x) => x.id === id);
+    if (!r || !this._guardProject(r.projectId)) return;
+    Object.assign(r, patch);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/reports/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) r.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteReport(id) {
+    const r = this.reports.find((x) => x.id === id);
+    if (r && !this._guardProject(r.projectId)) return;
+    this.state.reports = this.reports.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/reports/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
     }
   }
 

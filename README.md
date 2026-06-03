@@ -16,6 +16,7 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **▥ Cost / EVM** | Earned-Value dashboard — BAC/PV/EV/AC, CPI & SPI, cost/schedule variances, and a forecast at completion (EAC/VAC), with a cost-performance S-curve and a per-project table. This is the controls/finance view. |
 | **＄ Billing** | Schedule of Values & progress billing — AIA G702/G703-style payment applications driven by each task's cost + % complete, with retainage, "from previous / this period", current payment due, application history, and CSV export. |
 | **✉ Documents** | Submittal & RFI tracking — per-project logs with status workflows, ball-in-court / assignee, due dates, and a link to the related task. Overdue open items feed the alert center. |
+| **☰ Field** | Daily field reports — weather, temperature, manpower, work performed, deliveries and delays, newest first. The site's daily log. |
 
 ## Run it
 
@@ -60,6 +61,8 @@ views changes.
 | `GET /api/tasks/:id/history` | full audit trail for one task (read) |
 | `POST /api/billing`, `DELETE /api/billing/:id` | generate / delete a payment application |
 | `POST/PATCH/DELETE /api/docs/:id?` | submittal & RFI CRUD |
+| `POST/PATCH/DELETE /api/changeorders/:id?` | change-order CRUD (approved → billing) |
+| `POST/PATCH/DELETE /api/reports/:id?` | daily field report CRUD |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -191,6 +194,18 @@ an application from current progress (retainage configurable), browse the
 application history, and export the G703 to CSV. Generating/deleting is
 project-scoped and audited; `POST/DELETE /api/billing`.
 
+**Change orders** are managed from the Billing view: raise a CO (signed amount —
+negative for credits — plus a schedule-impact in days), move it through
+draft → pending → approved/rejected/void, and **approved COs roll into the G702**
+as *net change by change order* → *contract sum to date*, adjusting the balance
+to finish. `POST/PATCH/DELETE /api/changeorders`, project-scoped + audited.
+
+### Daily field reports
+
+The **Field** view is the site's daily log: weather + temperature, manpower,
+work performed, deliveries, and delays — newest first, one card per day, create/
+edit per project. `POST/PATCH/DELETE /api/reports`, project-scoped + audited.
+
 ### Submittals & RFIs
 
 The **Documents** view tracks **submittals** (draft → submitted → under-review →
@@ -287,6 +302,8 @@ src/
     variance.js         # pure baseline variance + baseline-to-baseline compare
     leveling.js         # pure resource leveling: conflicts, lane packing, auto-level (+options)
     billing.js          # pure schedule-of-values / G702-G703 payment-application math
+    changeorders.js     # pure change-order model + net-approved (feeds billing)
+    fieldreports.js     # pure daily-field-report model
     docs.js             # pure submittal/RFI model: kinds, statuses, numbering, overdue
     alerts.js           # pure derived alerts (overdue / blocked / slip / overdue docs)
     data.js             # browser store: identity, mutations + attribution,
@@ -299,8 +316,9 @@ src/
       calendar.js       # month grid with spans + milestones
       resources.js      # crew timeline with lane-packing + conflict highlighting
       cost.js           # earned-value dashboard + S-curve + per-project table
-      billing.js        # G702 summary + G703 continuation sheet + CSV export
+      billing.js        # G702 summary + G703 sheet + change-order log + CSV
       documents.js      # submittal & RFI columns with status badges + due dates
+      field.js          # daily field report cards
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -316,8 +334,8 @@ zero total float are flagged), not hard-coded.
 
 - Email/webhook delivery for the alert center
 - Mobile-friendly field view for crews
-- Change-order management feeding revised contract sums into billing
-- Daily field reports (weather, manpower, deliveries) linked to tasks
+- Photo attachments on daily reports & documents
+- Punch-list / closeout tracking
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
@@ -330,4 +348,5 @@ zero total float are flagged), not hard-coded.
 ✅ one-click auto-leveling with options (critical-path protection, freeze, horizon) ·
 ✅ baseline history (multiple baselines, compare across revisions) ·
 ✅ filterable + CSV-exportable audit log + in-app alert center ·
-✅ schedule of values / progress billing (G702/G703) + submittal & RFI tracking.
+✅ schedule of values / progress billing (G702/G703) + submittal & RFI tracking ·
+✅ change-order management (approved COs flow into billing) + daily field reports.

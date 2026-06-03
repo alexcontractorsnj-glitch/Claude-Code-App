@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId } from './src/js/seed.js';
 import { buildApplication, appsForProject } from './src/js/billing.js';
 import { makeDoc, DOC_KINDS } from './src/js/docs.js';
+import { makeChangeOrder, CO_STATUSES } from './src/js/changeorders.js';
+import { makeReport } from './src/js/fieldreports.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -387,6 +389,77 @@ async function handleApi(req, res, urlPath) {
         bump();
         await persistState();
         logAudit(actor, 'doc.delete', { targetId: id, targetName: `${doc.number} ${doc.title}`, projectId: doc.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'changeorders') {
+      if (!Array.isArray(state.changeOrders)) state.changeOrders = [];
+      if (method === 'POST' && !id) {
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const co = makeChangeOrder(state.changeOrders, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        if (co.status === 'approved') { co.approvedBy = actor.name; co.approvedAt = new Date().toISOString(); }
+        state.changeOrders.push(co);
+        bump(); await persistState();
+        logAudit(actor, 'co.create', { targetId: co.id, targetName: `${co.number} ${co.title}`, projectId: co.projectId });
+        return send(res, 201, co, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const co = state.changeOrders.find((c) => c.id === id);
+        if (!co) return send(res, 404, { error: 'change order not found' });
+        if (!canEditProject(actor, co.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        const wasApproved = co.status === 'approved';
+        ['title', 'description', 'amount', 'days', 'status'].forEach((k) => { if (body[k] !== undefined) co[k] = body[k]; });
+        if (!CO_STATUSES.includes(co.status)) co.status = 'draft';
+        if (co.status === 'approved' && !wasApproved) { co.approvedBy = actor.name; co.approvedAt = new Date().toISOString(); }
+        if (co.status !== 'approved') { co.approvedBy = null; co.approvedAt = null; }
+        co.rev = (co.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'co.update', { targetId: co.id, targetName: `${co.number} ${co.title}`, projectId: co.projectId, detail: `status ${co.status}` });
+        return send(res, 200, co, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const co = state.changeOrders.find((c) => c.id === id);
+        if (!co) return send(res, 404, { error: 'change order not found' });
+        if (!canEditProject(actor, co.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.changeOrders = state.changeOrders.filter((c) => c.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'co.delete', { targetName: `${co.number} ${co.title}`, projectId: co.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'reports') {
+      if (!Array.isArray(state.reports)) state.reports = [];
+      if (method === 'POST' && !id) {
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const r = makeReport(state.reports, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.reports.push(r);
+        bump(); await persistState();
+        logAudit(actor, 'report.create', { targetId: r.id, targetName: `Daily report ${r.date}`, projectId: r.projectId });
+        return send(res, 201, r, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const r = state.reports.find((x) => x.id === id);
+        if (!r) return send(res, 404, { error: 'report not found' });
+        if (!canEditProject(actor, r.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['date', 'weather', 'tempLow', 'tempHigh', 'manpower', 'workPerformed', 'deliveries', 'delays', 'notes'].forEach((k) => { if (body[k] !== undefined) r[k] = body[k]; });
+        r.rev = (r.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'report.update', { targetId: r.id, targetName: `Daily report ${r.date}`, projectId: r.projectId });
+        return send(res, 200, r, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const r = state.reports.find((x) => x.id === id);
+        if (!r) return send(res, 404, { error: 'report not found' });
+        if (!canEditProject(actor, r.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.reports = state.reports.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'report.delete', { targetName: `Daily report ${r.date}`, projectId: r.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
