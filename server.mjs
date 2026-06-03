@@ -252,7 +252,9 @@ async function handleApi(req, res, urlPath) {
     }
 
     if (resource === 'audit' && method === 'GET') {
-      return send(res, 200, audit.slice(-200).reverse());   // most-recent first
+      const q = new URLSearchParams((req.url.split('?')[1] || ''));
+      const n = q.get('all') ? AUDIT_CAP : 200;             // ?all=1 → full log for export
+      return send(res, 200, audit.slice(-n).reverse());     // most-recent first
     }
 
     if (resource === 'state' && method === 'GET') {

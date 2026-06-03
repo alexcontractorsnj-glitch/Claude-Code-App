@@ -12,6 +12,7 @@ import { renderCost } from './views/cost.js';
 import { renderResources } from './views/resources.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
+import { computeAlerts, alertSummary } from './alerts.js';
 
 const ctx = {
   view: 'gantt',
@@ -116,6 +117,7 @@ function renderHeader(root) {
           onclick: () => { ctx.view = key; renderHeader(root); renderActiveView(); },
         }, [el('span', { class: 'view-icon' }, v.icon), v.label]))),
     el('div', { class: 'header-actions' }, [
+      alertBell(),
       identityChip(root),
       store.can('write') ? el('button', { class: 'btn primary', onclick: () => openEditor(null) }, '+ New Task') : null,
     ]),
@@ -534,6 +536,51 @@ function openLevelPreview() {
   document.addEventListener('keydown', onKey);
 }
 
+// --- Alerts (notification center) -------------------------------------------
+const SEV_LABEL = { high: 'Critical', medium: 'Attention', low: 'Watch' };
+
+function alertBell() {
+  const s = alertSummary(computeAlerts(store.tasks('all'), store.baseline));
+  return el('button', { class: 'alert-bell' + (s.high ? ' urgent' : ''), title: `${s.total} schedule alert${s.total === 1 ? '' : 's'}`, onclick: () => openAlertsPanel() }, [
+    el('span', { class: 'bell-ico' }, '🔔'),
+    s.total ? el('span', { class: 'bell-badge' + (s.high ? ' high' : '') }, String(s.total)) : null,
+  ]);
+}
+
+function openAlertsPanel() {
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const alerts = computeAlerts(store.tasks('all'), store.baseline);
+  const body = el('div', { class: 'alert-list' });
+  if (!alerts.length) {
+    body.appendChild(el('div', { class: 'empty' }, '✓ No alerts — nothing overdue, blocked, or slipping.'));
+  } else {
+    ['high', 'medium', 'low'].forEach((sev) => {
+      const group = alerts.filter((a) => a.severity === sev);
+      if (!group.length) return;
+      body.appendChild(el('div', { class: 'alert-group-head' }, [el('span', { class: 'sev-dot sev-' + sev }), `${SEV_LABEL[sev]} (${group.length})`]));
+      group.forEach((a) => {
+        const proj = store.project(a.projectId);
+        body.appendChild(el('div', { class: 'alert-row', onclick: () => { close(); ctx.openTask(a.taskId); } }, [
+          el('span', { class: 'sev-dot sev-' + a.severity }),
+          el('div', { class: 'alert-main' }, [
+            el('div', { class: 'alert-title' }, [a.title, proj ? el('span', { class: 'alert-proj', style: { color: proj.color } }, ' · ' + proj.name) : null]),
+            el('div', { class: 'alert-msg' }, a.message),
+          ]),
+        ]));
+      });
+    });
+  }
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Alerts'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, body),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
+
 // --- Activity / audit log panel ---------------------------------------------
 const ACTION_META = {
   'task.create': { icon: '＋', label: 'created' },
@@ -552,21 +599,58 @@ const ACTION_META = {
 function openActivityPanel() {
   if (!store.can('write')) return;
   const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
-  const body = el('div', { class: 'activity-list' }, el('div', { class: 'login-err' }, ''));
-  const modal = el('div', { class: 'modal' }, [
-    el('div', { class: 'modal-head' }, [el('h2', {}, 'Activity Log'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
-    el('div', { class: 'modal-body' }, body),
+  const filterBar = el('div', { class: 'audit-filters' });
+  const list = el('div', { class: 'activity-list' }, el('div', { class: 'login-err' }, 'Loading…'));
+  const exportBtn = el('button', { class: 'btn ghost sm', disabled: true, onclick: () => exportCsv() }, '⤓ Export CSV');
+  let all = [];
+  const filt = { action: '', user: '', project: '', q: '' };
+
+  const modal = el('div', { class: 'modal modal-wide' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Activity Log'), exportBtn, el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [filterBar, list]),
   ]);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
 
-  store.listAudit().then((entries) => {
-    clear(body);
-    if (!entries.length) { body.appendChild(el('div', { class: 'empty' }, 'No activity yet.')); return; }
-    entries.forEach((e) => {
+  store.listAudit(true).then((entries) => {
+    all = entries;
+    exportBtn.disabled = !entries.length;
+    buildFilters();
+    render();
+  }).catch(() => { clear(list); list.appendChild(el('div', { class: 'login-err' }, 'Could not load activity.')); });
+
+  function buildFilters() {
+    const uniq = (k) => [...new Set(all.map((e) => e[k]).filter(Boolean))].sort();
+    const sel = (key, label, vals, render2) => {
+      const s = el('select', { class: 'select sm', onchange: (e) => { filt[key] = e.target.value; render(); } },
+        [el('option', { value: '' }, label), ...vals.map((v) => el('option', { value: v }, render2 ? render2(v) : v))]);
+      return s;
+    };
+    clear(filterBar);
+    filterBar.append(
+      sel('action', 'All actions', uniq('action'), (a) => (ACTION_META[a] ? a : a)),
+      sel('user', 'All users', uniq('user')),
+      sel('project', 'All projects', uniq('projectId'), (p) => { const pr = store.project(p); return pr ? pr.name : p; }),
+      el('input', { class: 'input sm', type: 'search', placeholder: 'Search…', oninput: (e) => { filt.q = e.target.value.toLowerCase(); render(); } }),
+    );
+  }
+
+  function filtered() {
+    return all.filter((e) =>
+      (!filt.action || e.action === filt.action) &&
+      (!filt.user || e.user === filt.user) &&
+      (!filt.project || e.projectId === filt.project) &&
+      (!filt.q || `${e.user} ${e.action} ${e.targetName || ''} ${e.detail || ''}`.toLowerCase().includes(filt.q)));
+  }
+
+  function render() {
+    const rows = filtered();
+    clear(list);
+    if (!rows.length) { list.appendChild(el('div', { class: 'empty' }, 'No matching activity.')); return; }
+    rows.forEach((e) => {
       const meta = ACTION_META[e.action] || { icon: '•', label: e.action };
       const proj = e.projectId ? store.project(e.projectId) : null;
-      body.appendChild(el('div', { class: 'activity-row' }, [
+      list.appendChild(el('div', { class: 'activity-row' }, [
         el('span', { class: 'activity-icon' }, meta.icon),
         el('div', { class: 'activity-main' }, [
           el('div', { class: 'activity-text' }, [
@@ -579,7 +663,22 @@ function openActivityPanel() {
         el('span', { class: 'activity-time', title: e.ts }, ago(e.ts) || ''),
       ]));
     });
-  }).catch(() => { clear(body); body.appendChild(el('div', { class: 'login-err' }, 'Could not load activity.')); });
+  }
+
+  function exportCsv() {
+    const rows = filtered();
+    const cell = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const header = ['timestamp', 'user', 'role', 'action', 'target', 'project', 'detail'];
+    const lines = [header.join(',')].concat(rows.map((e) => [
+      e.ts, e.user, e.role || '', e.action, e.targetName || '',
+      (store.project(e.projectId) || {}).name || '', e.detail || '',
+    ].map(cell).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: `buildflow-activity-${Dates.today()}.csv` });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
   function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
   function onKey(ev) { if (ev.key === 'Escape') close(); }

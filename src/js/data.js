@@ -162,7 +162,7 @@ class Store {
   updateUser(username, patch) { return api('PATCH', '/users/' + username, patch).then((r) => r.data); }
   setUserRole(username, role) { return this.updateUser(username, { role }); }
   deleteUser(username) { return api('DELETE', '/users/' + username).then(() => true); }
-  listAudit() { return api('GET', '/audit').then((r) => r.data); }
+  listAudit(all) { return api('GET', '/audit' + (all ? '?all=1' : '')).then((r) => r.data); }
   taskHistory(id) { return api('GET', '/tasks/' + id + '/history').then((r) => r.data); }
 
   // ---- team identity (attribution, not authentication) ----

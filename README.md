@@ -54,7 +54,7 @@ views changes.
 | `DELETE /api/baseline/:id` | delete a baseline from history |
 | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
-| `GET /api/audit` | recent activity log (write role) |
+| `GET /api/audit` | activity log, newest first (`?all=1` for the full log; write role) |
 | `GET /api/tasks/:id/history` | full audit trail for one task (read) |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
@@ -172,6 +172,21 @@ Each task also has its own **history timeline**: open a task and click *Show
 change history* (`GET /api/tasks/:id/history`, any authenticated user) to see
 every recorded change to just that task, newest first.
 
+The Activity panel is **filterable** (by action, user, project, free text) and
+**exports to CSV** (the filtered rows). `GET /api/audit?all=1` returns the full
+log (capped at 500) for export.
+
+### Alerts (notification center)
+
+The header **🔔 bell** shows a live count of schedule alerts derived from the
+current plan + active baseline: **overdue** tasks/milestones, **blocked** work,
+and **milestones slipping** versus baseline — sorted by severity, each clicking
+through to the task. Detection is pure and tested (`alerts.js`).
+
+> Out of scope for this offline demo: pushing these alerts out over
+> **email/webhook**. That's a thin server addition — a job that diffs the alert
+> set and POSTs new ones to a configured endpoint — not something wired up here.
+
 ### Resource leveling
 
 The **Resources** view lays each crew out on the timeline with their tasks
@@ -246,6 +261,7 @@ src/
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
     variance.js         # pure baseline variance + baseline-to-baseline compare
     leveling.js         # pure resource leveling: conflicts, lane packing, auto-level (+options)
+    alerts.js           # pure derived alerts (overdue / blocked / milestone slip)
     data.js             # browser store: identity, mutations + attribution,
                         #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
@@ -269,10 +285,10 @@ zero total float are flagged), not hard-coded.
 
 ## Roadmap (next sprints)
 
-- Exportable audit log (CSV) + global activity filters
-- Notifications (email/webhook) on milestone slips or blocked tasks
+- Email/webhook delivery for the alert center
 - Schedule-of-values / progress billing tied to earned value
 - Mobile-friendly field view for crews
+- Submittal & RFI tracking linked to tasks
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
@@ -283,4 +299,5 @@ zero total float are flagged), not hard-coded.
 ✅ project-scoped permissions + in-app audit log ·
 ✅ resource leveling + per-task history timeline ·
 ✅ one-click auto-leveling with options (critical-path protection, freeze, horizon) ·
-✅ baseline history (multiple baselines, compare across revisions).
+✅ baseline history (multiple baselines, compare across revisions) ·
+✅ filterable + CSV-exportable audit log + in-app alert center.
