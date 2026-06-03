@@ -12,6 +12,7 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **▦ Gantt** | The schedule backbone. Time-scaled bars, finish-to-start dependency arrows, a live **Critical Path** overlay (CPM forward/backward pass), per-task % complete, milestones (◆), weekend bands, and a "today" line. This is how a PM sees float and what's driving the end date. |
 | **▤ Board** | Kanban by status (Not Started → In Progress → Blocked → Done). **Drag a card** between columns to update status in the field. This is the daily-standup / superintendent view. |
 | **▣ Calendar** | Month grid with task spans and milestone/inspection markers. This is the crew-dispatch and "what's happening this week" view. |
+| **▥ Cost / EVM** | Earned-Value dashboard — BAC/PV/EV/AC, CPI & SPI, cost/schedule variances, and a forecast at completion (EAC/VAC), with a cost-performance S-curve and a per-project table. This is the controls/finance view. |
 
 ## Run it
 
@@ -52,6 +53,35 @@ The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
 **`src/js/seed.js`** and is imported by *both* the browser and the server, so the
 business rules exist in exactly one place.
 
+### Multi-user concurrency (optimistic locking + live sync)
+
+The API is safe for two people editing at once:
+
+- Every task carries a `rev`; the whole state carries a global `rev` surfaced as
+  an **`ETag`**.
+- `PATCH` sends **`If-Match: "<task rev>"`**. If someone else changed the task
+  first, the server returns **`409 Conflict`** with the current task — the client
+  then reloads the latest and shows a toast instead of silently clobbering.
+- The browser **polls `GET /api/state` with `If-None-Match`** every few seconds;
+  the server answers **`304 Not Modified`** when nothing changed, or sends the new
+  state when another user edits — so a change in one tab appears in another within
+  the poll interval. Open the app in two browser windows to see it.
+
+### Earned-Value Management (CPI/SPI)
+
+Each task is **cost-loaded** (a `cost` = budget-at-completion and an `actualCost`
+= money spent, both editable in the task dialog). The **Cost / EVM** view computes
+standard EVM at today's data date:
+
+```
+PV  planned value   EV  earned value     AC  actual cost
+CPI = EV/AC         SPI = EV/PV          CV = EV−AC   SV = EV−PV
+EAC = BAC/CPI       ETC = EAC−AC         VAC = BAC−EAC
+```
+
+…and renders a cost-performance S-curve (planned-value curve + EV/AC markers at
+today + EAC forecast) and a per-project earned-value table with a health verdict.
+
 ## What's in the box
 
 - **3 sample projects** — a commercial complex, a logistics warehouse, and a
@@ -78,15 +108,18 @@ server.mjs              # zero-dependency static host + REST API + file persiste
 src/
   css/styles.css        # dark "control-room" theme
   js/
-    seed.js             # shared domain core: model, seed, date math, task rules
-                        #   (imported by BOTH the browser and the server)
-    data.js             # browser store: selectors, mutations, remote-sync, CPM
+    seed.js             # shared domain core: model, seed, date math, task rules,
+                        #   normalizeState migration (imported by browser AND server)
+    evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
+    data.js             # browser store: selectors, mutations, optimistic locking,
+                        #   live polling, conflict handling, CPM critical-path
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
-    app.js              # controller: router, filters, KPIs, task editor, sync pill
+    app.js              # controller: router, filters, KPIs, task editor, toasts
     views/
       gantt.js          # time-scaled bars, SVG dep arrows, today line, drag-resize
       board.js          # drag-and-drop Kanban
       calendar.js       # month grid with spans + milestones
+      cost.js           # earned-value dashboard + S-curve + per-project table
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -101,9 +134,10 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Resource leveling / crew over-allocation warnings
-- Baseline vs. actual variance tracking
-- Multi-user concurrency on the REST API (per-entity ETags / optimistic locking)
-- Cost loading per task → earned-value (CPI/SPI) reporting
+- Baseline vs. actual variance tracking (save a baseline, chart drift)
+- Auth + per-user attribution on edits (who changed what, when)
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
-✅ server-side persistence via REST API behind the same store interface.
+✅ server-side persistence via REST API behind the same store interface ·
+✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
+✅ earned-value (CPI/SPI) cost reporting with S-curve.

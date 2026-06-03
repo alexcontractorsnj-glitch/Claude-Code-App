@@ -86,6 +86,7 @@ export function seedState() {
       id: 't' + n, projectId: proj, name, trade, crewId: crew,
       start: s, end: e, dependencies: deps, progress,
       status, milestone, priority: 'normal',
+      cost: 0, actualCost: 0, rev: 1,   // cost loaded below; rev for optimistic locking
     };
   };
 
@@ -131,7 +132,24 @@ export function seedState() {
       location: 'Lakeview, OR', color: '#fb8c00', budget: 5300000, manager: 'C. Bauer' },
   ];
 
-  return { projects, tasks, crews, version: SCHEMA_VERSION };
+  // --- Cost-load each task (for Earned-Value reporting) --------------------
+  // Split each project's contract value across its work packages, weighted by
+  // duration. Milestones carry no cost. Actual cost is seeded with a small,
+  // deterministic per-task variance so CPI/SPI are realistic (not all 1.00).
+  projects.forEach((proj) => {
+    const pts = tasks.filter((t) => t.projectId === proj.id && !t.milestone);
+    const totalDur = pts.reduce((a, t) => a + (Dates.diffDays(t.start, t.end) + 1), 0) || 1;
+    pts.forEach((t) => {
+      const dur = Dates.diffDays(t.start, t.end) + 1;
+      t.cost = Math.round((proj.budget * dur / totalDur) / 1000) * 1000; // BAC, to nearest $1k
+      const earned = t.cost * (t.progress / 100);
+      const idNum = +String(t.id).slice(1) || 0;
+      const factor = 1 + (((idNum % 5) - 2) * 0.05); // 0.90 .. 1.10, deterministic
+      t.actualCost = Math.round(earned * factor); // money spent so far
+    });
+  });
+
+  return { projects, tasks, crews, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // --- Pure helpers shared by client + server --------------------------------
@@ -151,17 +169,36 @@ export function makeTask(existing, partial) {
     status: partial.status || 'not-started',
     milestone: !!partial.milestone,
     priority: partial.priority || 'normal',
+    cost: partial.cost || 0,
+    actualCost: partial.actualCost || 0,
+    rev: 1,
   };
 }
 
 // Apply a patch to a task with progress/status coherence rules. Mutates `t`.
+// `rev` is managed by the caller (store/server) and never set from a patch.
 export function applyTaskPatch(t, patch) {
-  Object.assign(t, patch);
-  if (patch.progress != null) {
-    if (patch.progress >= 100) t.status = 'done';
-    else if (patch.progress > 0 && t.status === 'not-started') t.status = 'in-progress';
+  const { rev, id, ...safe } = patch; // never let a patch overwrite identity/rev
+  Object.assign(t, safe);
+  if (safe.progress != null) {
+    if (safe.progress >= 100) t.status = 'done';
+    else if (safe.progress > 0 && t.status === 'not-started') t.status = 'in-progress';
   }
-  if (patch.status === 'done') t.progress = 100;
-  if (patch.status === 'not-started' && t.progress === 100) t.progress = 0;
+  if (safe.status === 'done') t.progress = 100;
+  if (safe.status === 'not-started' && t.progress === 100) t.progress = 0;
   return t;
+}
+
+// Backfill fields on a state loaded from disk/cache that predates newer schema
+// additions (cost/actualCost/rev). Idempotent. Mutates and returns `state`.
+export function normalizeState(state) {
+  if (!state || !Array.isArray(state.tasks)) return seedState();
+  if (state.rev == null) state.rev = 1;
+  state.tasks.forEach((t) => {
+    if (t.cost == null) t.cost = 0;
+    if (t.actualCost == null) t.actualCost = 0;
+    if (t.rev == null) t.rev = 1;
+    if (!Array.isArray(t.dependencies)) t.dependencies = [];
+  });
+  return state;
 }

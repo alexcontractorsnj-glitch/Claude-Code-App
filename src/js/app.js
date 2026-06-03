@@ -8,6 +8,7 @@ import { el, clear, money, pct } from './utils.js';
 import { renderGantt } from './views/gantt.js';
 import { renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
+import { renderCost } from './views/cost.js';
 
 const ctx = {
   view: 'gantt',
@@ -30,6 +31,7 @@ const VIEWS = {
   gantt: { label: 'Gantt', icon: '▦', render: renderGantt },
   board: { label: 'Board', icon: '▤', render: renderBoard },
   calendar: { label: 'Calendar', icon: '▣', render: renderCalendar },
+  cost: { label: 'Cost / EVM', icon: '▥', render: renderCost },
 };
 
 let viewMount; // the area where the active view renders
@@ -155,6 +157,8 @@ function openEditor(taskId) {
   const progLabel = el('span', { class: 'range-val' }, pct(t.progress));
   f.progress.addEventListener('input', () => progLabel.textContent = pct(+f.progress.value));
   f.milestone = el('input', { type: 'checkbox' }); f.milestone.checked = t.milestone;
+  f.cost = el('input', { class: 'input', type: 'number', min: '0', step: '1000', value: t.cost || 0 });
+  f.actualCost = el('input', { class: 'input', type: 'number', min: '0', step: '1000', value: t.actualCost || 0 });
 
   // Dependencies (multi-select of sibling tasks)
   const depCandidates = store.tasks(t.projectId).filter((x) => x.id !== taskId);
@@ -174,6 +178,10 @@ function openEditor(taskId) {
       el('div', { class: 'form-row' }, [
         field('Status', f.status),
         field('Progress', el('div', { class: 'range-wrap' }, [f.progress, progLabel])),
+      ]),
+      el('div', { class: 'form-row' }, [
+        field('Budgeted cost (BAC, $)', f.cost),
+        field('Actual cost to date (AC, $)', f.actualCost),
       ]),
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
@@ -200,6 +208,8 @@ function openEditor(taskId) {
       start, end: f.milestone.checked ? start : end,
       status: f.status.value, progress: +f.progress.value,
       milestone: f.milestone.checked,
+      cost: Math.max(0, +f.cost.value || 0),
+      actualCost: Math.max(0, +f.actualCost.value || 0),
       dependencies: [...f.deps.selectedOptions].map((o) => o.value),
     };
   }
@@ -233,6 +243,16 @@ export function boot() {
   store.onStatus((mode, syncing) => {
     sync.className = 'sync-pill ' + mode + (syncing ? ' syncing' : '');
     sync.textContent = syncing ? 'Saving…' : (mode === 'remote' ? 'Synced to server' : 'Local cache');
+  });
+
+  // Toasts for concurrency events (another user edited / conflict reloaded).
+  const toasts = el('div', { class: 'toast-stack' });
+  root.appendChild(toasts);
+  store.onNotice((msg, tone = 'info') => {
+    const t = el('div', { class: 'toast ' + tone }, msg);
+    toasts.appendChild(t);
+    setTimeout(() => t.classList.add('show'), 10);
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 4200);
   });
 
   store.subscribe(() => renderActiveView());

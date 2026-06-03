@@ -17,7 +17,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedState, makeTask, applyTaskPatch } from './src/js/seed.js';
+import { seedState, makeTask, applyTaskPatch, normalizeState } from './src/js/seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.argv[2] || process.env.PORT || 8000;
@@ -38,13 +38,18 @@ let writeChain = Promise.resolve();           // serialize writes
 
 async function loadState() {
   if (existsSync(DATA_FILE)) {
-    try { return JSON.parse(await readFile(DATA_FILE, 'utf8')); }
+    try { return normalizeState(JSON.parse(await readFile(DATA_FILE, 'utf8'))); }
     catch { /* corrupt → reseed below */ }
   }
   const fresh = seedState();
   await persist(fresh);
   return fresh;
 }
+
+// Global revision: bumped on every write so clients can detect others' edits
+// (sent as an ETag) and we can serve cheap 304s when nothing changed.
+function bump() { state.rev = (state.rev || 0) + 1; return state.rev; }
+const etag = () => '"' + (state.rev || 0) + '"';
 
 function persist(next) {
   // Chain writes so concurrent requests can't interleave file output.
@@ -56,9 +61,9 @@ function persist(next) {
 }
 
 // --- HTTP helpers -----------------------------------------------------------
-function send(res, code, payload) {
+function send(res, code, payload, headers = {}) {
   const body = payload == null ? '' : JSON.stringify(payload);
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
   res.end(body);
 }
 
@@ -80,36 +85,53 @@ async function handleApi(req, res, urlPath) {
 
   try {
     if (resource === 'state' && method === 'GET') {
-      return send(res, 200, state);
+      // Conditional GET: 304 when the client already has the current revision.
+      const inm = req.headers['if-none-match'];
+      if (inm && inm.replace(/"/g, '') === String(state.rev || 0)) {
+        res.writeHead(304, { ETag: etag() }); return res.end();
+      }
+      return send(res, 200, state, { ETag: etag() });
     }
 
     if (resource === 'reset' && method === 'POST') {
+      const rev = (state.rev || 0) + 1;        // keep advancing so caches invalidate
       state = seedState();
+      state.rev = rev;
       await persist(state);
-      return send(res, 200, state);
+      return send(res, 200, state, { ETag: etag() });
     }
 
     if (resource === 'tasks') {
       if (method === 'POST') {
         const body = await readBody(req);
         const task = body.id ? body : makeTask(state.tasks, body);
+        if (task.rev == null) task.rev = 1;
         // guard against duplicate ids from the optimistic client
         if (!state.tasks.some((t) => t.id === task.id)) state.tasks.push(task);
+        bump();
         await persist(state);
-        return send(res, 201, task);
+        return send(res, 201, task, { ETag: etag() });
       }
       if (method === 'PATCH' && id) {
         const t = state.tasks.find((x) => x.id === id);
         if (!t) return send(res, 404, { error: 'task not found' });
+        // Optimistic concurrency: reject if the client's rev is stale.
+        const ifMatch = req.headers['if-match'];
+        if (ifMatch && ifMatch.replace(/"/g, '') !== String(t.rev || 1)) {
+          return send(res, 409, { error: 'revision conflict', current: t }, { ETag: etag() });
+        }
         applyTaskPatch(t, await readBody(req));
+        t.rev = (t.rev || 1) + 1;
+        bump();
         await persist(state);
-        return send(res, 200, t);
+        return send(res, 200, t, { ETag: etag() });
       }
       if (method === 'DELETE' && id) {
         state.tasks = state.tasks.filter((t) => t.id !== id);
         state.tasks.forEach((t) => { t.dependencies = t.dependencies.filter((d) => d !== id); });
+        bump();
         await persist(state);
-        res.writeHead(204); return res.end();
+        res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
 

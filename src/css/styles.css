@@ -238,6 +238,60 @@ body.dragging-gantt { user-select: none; cursor: grabbing; }
 .ms-diamond { color: var(--accent); }
 .cal-ms-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ===================== COST / EVM ===================== */
+.view-area:has(.cost-view) { flex-direction: column; }
+.cost-view { flex: 1; overflow-y: auto; width: 100%; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; }
+
+.evm-deck { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.evm-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; border-left: 3px solid var(--line); }
+.evm-card.good { border-left-color: var(--green); }
+.evm-card.warn { border-left-color: var(--accent); }
+.evm-card.bad { border-left-color: var(--red); }
+.evm-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); font-weight: 700; }
+.evm-value { font-size: 24px; font-weight: 800; margin: 4px 0 2px; }
+.evm-card.good .evm-value { color: var(--green); }
+.evm-card.warn .evm-value { color: var(--accent-2); }
+.evm-card.bad .evm-value { color: var(--red); }
+.evm-sub { font-size: 11.5px; color: var(--text-dim); }
+
+.panel { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 700; font-size: 13px; }
+.panel-legend { display: flex; gap: 14px; font-weight: 500; font-size: 11.5px; color: var(--text-dim); }
+.lg { display: inline-flex; align-items: center; gap: 6px; }
+.lg-dot { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+
+.scurve-wrap { padding: 12px 16px; }
+.scurve { width: 100%; height: 340px; display: block; }
+.scurve .grid { stroke: var(--line-soft); stroke-width: 1; }
+.scurve .axis-lbl { fill: var(--text-faint); font-size: 11px; font-family: inherit; }
+.scurve .axis-lbl.accent, .scurve .axis-lbl.eac { fill: var(--accent-2); font-weight: 700; }
+.scurve .pv-line { fill: none; stroke: #5b6b7b; stroke-width: 2.5; }
+.scurve .today-v { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.scurve .eac-line { stroke: var(--red); stroke-width: 2; stroke-dasharray: 6 4; }
+.scurve .eac-dot { fill: var(--red); }
+.scurve .ev-dot { fill: var(--green); stroke: #0b0e13; stroke-width: 2; }
+.scurve .ac-dot { fill: var(--accent); stroke: #0b0e13; stroke-width: 2; }
+
+.evm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.evm-table th, .evm-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line-soft); }
+.evm-table th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); }
+.evm-table td.num, .evm-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.evm-table td.pos { color: var(--green); }
+.evm-table td.neg { color: var(--red); }
+.evm-table tr.tot td { border-top: 2px solid var(--line); font-weight: 800; border-bottom: none; }
+.proj-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; }
+.health { padding: 3px 10px; border-radius: 20px; font-size: 10.5px; font-weight: 700; }
+.health.good { background: rgba(52,199,89,.14); color: var(--green); }
+.health.warn { background: rgba(245,166,35,.14); color: var(--accent-2); }
+.health.bad { background: rgba(255,77,79,.14); color: var(--red); }
+
+/* ===================== TOASTS ===================== */
+.toast-stack { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+.toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--blue); color: var(--text); padding: 11px 16px; border-radius: 9px; font-size: 13px; max-width: 340px; box-shadow: var(--shadow); opacity: 0; transform: translateX(20px); transition: opacity .25s, transform .25s; }
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.warn { border-left-color: var(--accent); }
+.toast.info { border-left-color: var(--blue); }
+
 /* ===================== MODAL ===================== */
 .modal-overlay { position: fixed; inset: 0; background: rgba(5,8,12,.7); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 100; padding: 20px; }
 .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; width: 560px; max-width: 100%; max-height: 92vh; overflow: auto; box-shadow: var(--shadow); animation: pop .16s ease; }
@@ -278,4 +332,5 @@ body.dragging-gantt { user-select: none; cursor: grabbing; }
 @media (max-width: 1100px) {
   .kpi-bar { grid-template-columns: repeat(4, 1fr); }
   .board { grid-template-columns: repeat(2, 1fr); }
+  .evm-deck { grid-template-columns: repeat(2, 1fr); }
 }

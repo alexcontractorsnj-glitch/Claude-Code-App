@@ -11,7 +11,7 @@
 
 import {
   TRADES, STATUSES, STATUS_ORDER, Dates,
-  seedState, makeTask, applyTaskPatch, SCHEMA_VERSION,
+  seedState, makeTask, applyTaskPatch, normalizeState, SCHEMA_VERSION,
 } from './seed.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
@@ -20,23 +20,39 @@ export { TRADES, STATUSES, STATUS_ORDER, Dates };
 const STORAGE_KEY = 'buildflow.schedule.v1';
 const API = '/api';
 const API_TIMEOUT = 2500;
+const POLL_MS = 4000;            // how often to check the server for others' edits
 
-// --- Tiny fetch helper with timeout ----------------------------------------
-async function api(method, path, body) {
+// --- Fetch helper: returns { status, data, etag }; throws Error w/ .status --
+async function api(method, path, body, headers = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT);
   try {
     const res = await fetch(API + path, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: ctrl.signal,
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.status === 204 ? null : await res.json();
+    const etag = res.headers.get('ETag');
+    if (res.status === 304) return { status: 304, data: null, etag };
+    if (!res.ok) {
+      const err = new Error('HTTP ' + res.status);
+      err.status = res.status;
+      try { err.data = await res.json(); } catch { /* ignore */ }
+      throw err;
+    }
+    const data = res.status === 204 ? null : await res.json();
+    return { status: res.status, data, etag };
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Parse a global revision number out of an ETag header (`"7"` → 7).
+function revOf(etag) {
+  if (!etag) return null;
+  const n = parseInt(String(etag).replace(/"/g, ''), 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 // --- Store ------------------------------------------------------------------
@@ -44,9 +60,12 @@ class Store {
   constructor() {
     this.listeners = new Set();
     this.statusListeners = new Set();
+    this.noticeListeners = new Set();
     this.mode = 'local';          // 'local' until the API answers
     this.syncing = false;
-    this.state = this._loadLocal();
+    this.rev = null;              // last global revision seen from the server
+    this._poll = null;
+    this.state = normalizeState(this._loadLocal());
     this._hydrateRemote();        // fire-and-forget; re-emits if server responds
   }
 
@@ -71,12 +90,14 @@ class Store {
 
   async _hydrateRemote() {
     try {
-      const remote = await api('GET', '/state');
-      if (remote && remote.tasks) {
-        this.state = remote;
+      const { data, etag } = await api('GET', '/state');
+      if (data && data.tasks) {
+        this.state = normalizeState(data);
+        this.rev = revOf(etag) ?? data.rev ?? this.rev;
         this.mode = 'remote';
-        this._cacheLocal(remote);
-        this._emit({ persistLocalOnly: true }); // server already has it
+        this._cacheLocal(this.state);
+        this.listeners.forEach((fn) => fn(this.state));
+        this._startPolling();
       }
     } catch (e) {
       this.mode = 'local';        // file:// or no API — stay on LocalStorage
@@ -85,22 +106,41 @@ class Store {
     }
   }
 
+  // Poll the server; only re-hydrate when the global rev advances past ours
+  // (i.e. another client wrote). Cheap: 304 Not Modified when nothing changed.
+  _startPolling() {
+    if (this._poll || typeof setInterval !== 'function') return;
+    this._poll = setInterval(async () => {
+      if (this.mode !== 'remote' || this.syncing) return;
+      try {
+        const { status, data, etag } = await api('GET', '/state', null,
+          this.rev != null ? { 'If-None-Match': '"' + this.rev + '"' } : {});
+        if (status === 304) return;
+        const newRev = revOf(etag) ?? (data && data.rev);
+        if (data && data.tasks && newRev !== this.rev) {
+          this.state = normalizeState(data);
+          this.rev = newRev;
+          this._cacheLocal(this.state);
+          this.listeners.forEach((fn) => fn(this.state));
+          this._notify('Schedule updated by another user', 'info');
+        }
+      } catch (e) {
+        this.mode = 'local';
+        this._emitStatus();
+        clearInterval(this._poll); this._poll = null;
+      }
+    }, POLL_MS);
+  }
+
   // ---- pub/sub ----
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   onStatus(fn) { this.statusListeners.add(fn); return () => this.statusListeners.delete(fn); }
+  onNotice(fn) { this.noticeListeners.add(fn); return () => this.noticeListeners.delete(fn); }
   _emit() { this._cacheLocal(this.state); this.listeners.forEach((fn) => fn(this.state)); }
   _emitStatus() { this.statusListeners.forEach((fn) => fn(this.mode, this.syncing)); }
+  _notify(msg, tone) { this.noticeListeners.forEach((fn) => fn(msg, tone)); }
 
   _setSyncing(v) { this.syncing = v; this._emitStatus(); }
-
-  // Run a remote write in the background; downgrade to local mode on failure.
-  async _push(fn) {
-    if (this.mode !== 'remote') return;
-    this._setSyncing(true);
-    try { await fn(); }
-    catch (e) { this.mode = 'local'; console.warn('Remote sync lost — using local cache', e); }
-    finally { this._setSyncing(false); }
-  }
 
   // ---- selectors ----
   get projects() { return this.state.projects; }
@@ -115,19 +155,45 @@ class Store {
   project(id) { return this.state.projects.find((p) => p.id === id) || null; }
 
   // ---- mutations (optimistic: local first, then sync) ----
+  // PATCH carries If-Match with the task's known rev. A 409 means someone else
+  // changed it first → we re-hydrate from the server and tell the user.
   updateTask(id, patch) {
     const t = this.task(id);
     if (!t) return;
+    const baseRev = t.rev || 1;
     applyTaskPatch(t, patch);
     this._emit();
-    this._push(() => api('PATCH', '/tasks/' + id, patch));
+    if (this.mode !== 'remote') return;
+    this._setSyncing(true);
+    api('PATCH', '/tasks/' + id, patch, { 'If-Match': '"' + baseRev + '"' })
+      .then(({ data, etag }) => {
+        const cur = this.task(id);
+        if (cur && data && data.rev != null) cur.rev = data.rev;
+        this.rev = revOf(etag) ?? this.rev;
+        this._setSyncing(false);
+      })
+      .catch((err) => {
+        this._setSyncing(false);
+        if (err.status === 409) {
+          this._notify('That task was just changed by someone else — reloaded the latest.', 'warn');
+          this._hydrateRemote();
+        } else {
+          this.mode = 'local';
+          this._emitStatus();
+        }
+      });
   }
 
   addTask(partial) {
     const full = makeTask(this.state.tasks, partial);
     this.state.tasks.push(full);
     this._emit();
-    this._push(() => api('POST', '/tasks', full));
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('POST', '/tasks', full)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+    }
     return full;
   }
 
@@ -137,16 +203,26 @@ class Store {
       t.dependencies = t.dependencies.filter((d) => d !== id);
     });
     this._emit();
-    this._push(() => api('DELETE', '/tasks/' + id));
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/tasks/' + id)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+    }
   }
 
   async reset() {
     if (this.mode === 'remote') {
       this._setSyncing(true);
       try {
-        const fresh = await api('POST', '/reset');
-        if (fresh && fresh.tasks) { this.state = fresh; this._emit(); return; }
-      } catch (e) { this.mode = 'local'; }
+        const { data, etag } = await api('POST', '/reset');
+        if (data && data.tasks) {
+          this.state = normalizeState(data);
+          this.rev = revOf(etag) ?? data.rev ?? this.rev;
+          this._emit();
+          return;
+        }
+      } catch (e) { this.mode = 'local'; this._emitStatus(); }
       finally { this._setSyncing(false); }
     }
     this.state = seedState();
