@@ -220,10 +220,20 @@ export function boot() {
 
   const kpis = el('div', { id: 'kpis', class: 'kpi-bar' });
   viewMount = el('main', { id: 'view', class: 'view-area' });
+  const sync = el('span', { id: 'sync-pill', class: 'sync-pill local' }, 'Local cache');
   root.appendChild(kpis);
   root.appendChild(viewMount);
-  root.appendChild(el('footer', { class: 'app-footer' },
-    'BuildFlow ERP · Schedule module · Data persists locally in your browser'));
+  root.appendChild(el('footer', { class: 'app-footer' }, [
+    el('span', {}, 'BuildFlow ERP · Schedule module'),
+    el('span', { class: 'foot-sep' }, '·'),
+    sync,
+  ]));
+
+  // Reflect persistence mode (server-backed vs. local-only) live.
+  store.onStatus((mode, syncing) => {
+    sync.className = 'sync-pill ' + mode + (syncing ? ' syncing' : '');
+    sync.textContent = syncing ? 'Saving…' : (mode === 'remote' ? 'Synced to server' : 'Local cache');
+  });
 
   store.subscribe(() => renderActiveView());
   renderActiveView();

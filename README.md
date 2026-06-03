@@ -15,18 +15,42 @@ sequence, and track field work across multiple projects, crews, and trades.
 
 ## Run it
 
-No build step, no dependencies — pure ES modules.
+No build step, no `npm install` — pure ES modules + a zero-dependency Node server.
 
 ```bash
-# Option A: the bundled zero-dependency Node server
+# Recommended: static host + REST API (server-backed persistence)
 npm start            # → http://localhost:8000
 
-# Option B: any static server
+# Or any static server (no API → the app runs on LocalStorage only)
 python3 -m http.server 8000
 ```
 
 Then open **http://localhost:8000**. (Open via a server, not `file://`, so ES
 module imports resolve.)
+
+The footer shows a live pill: **Synced to server** when the REST API is reachable,
+**Local cache** otherwise.
+
+## Persistence — server-backed, with offline fallback
+
+`npm start` runs `server.mjs`, which serves the static app **and** a small REST
+API that persists schedule state to `data/schedule.json`. The browser store
+hydrates from the API on load and writes changes back optimistically; if the API
+isn't there (e.g. you opened it through a plain static server), it transparently
+falls back to **LocalStorage** with the identical interface — no code path in the
+views changes.
+
+| Method & path | Action |
+|---|---|
+| `GET /api/state` | full schedule `{ projects, crews, tasks }` |
+| `POST /api/tasks` | create a work package |
+| `PATCH /api/tasks/:id` | update (progress/status coherence applied server-side) |
+| `DELETE /api/tasks/:id` | delete + strip dangling dependency refs |
+| `POST /api/reset` | reseed the sample data |
+
+The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
+**`src/js/seed.js`** and is imported by *both* the browser and the server, so the
+business rules exist in exactly one place.
 
 ## What's in the box
 
@@ -39,22 +63,28 @@ module imports resolve.)
 - **Filters** by project and trade, applied across all three views.
 - **Full task editor**: name, project, trade, crew, dates, status, progress,
   dependencies (multi-select), and milestone toggle. Create / edit / delete.
-- **Local persistence** — everything is saved to your browser's LocalStorage, so
-  it behaves like a real app between reloads. "↺ Reset Demo" restores the seed.
+- **Drag-to-reschedule on the Gantt** — grab a bar to shift it in time, or drag
+  either **edge** to change just the start or finish (snaps to whole days, with a
+  live date readout). Milestones drag too. Releasing commits to the store, which
+  recomputes the critical path and redraws dependency links.
+- **Persistence** — server-backed via the REST API when available, with automatic
+  LocalStorage fallback. "↺ Reset Demo" restores the seed.
 
 ## Architecture
 
 ```
 index.html              # shell, loads fonts + the ES-module entry
-server.js               # ~40-line static server (no npm install needed)
+server.mjs              # zero-dependency static host + REST API + file persistence
 src/
   css/styles.css        # dark "control-room" theme
   js/
-    data.js             # single source of truth: model, store, CPM critical-path
+    seed.js             # shared domain core: model, seed, date math, task rules
+                        #   (imported by BOTH the browser and the server)
+    data.js             # browser store: selectors, mutations, remote-sync, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
-    app.js              # controller: router, filters, KPIs, task editor modal
+    app.js              # controller: router, filters, KPIs, task editor, sync pill
     views/
-      gantt.js          # time-scaled bars + SVG dependency arrows + today line
+      gantt.js          # time-scaled bars, SVG dep arrows, today line, drag-resize
       board.js          # drag-and-drop Kanban
       calendar.js       # month grid with spans + milestones
 ```
@@ -72,6 +102,8 @@ zero total float are flagged), not hard-coded.
 
 - Resource leveling / crew over-allocation warnings
 - Baseline vs. actual variance tracking
-- Drag-to-reschedule directly on the Gantt bars
-- Server-side persistence + multi-user (REST API behind the same store interface)
+- Multi-user concurrency on the REST API (per-entity ETags / optimistic locking)
 - Cost loading per task → earned-value (CPI/SPI) reporting
+
+**Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
+✅ server-side persistence via REST API behind the same store interface.
