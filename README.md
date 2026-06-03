@@ -12,6 +12,7 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **▦ Gantt** | The schedule backbone. Time-scaled bars, finish-to-start dependency arrows, a live **Critical Path** overlay (CPM forward/backward pass), per-task % complete, milestones (◆), weekend bands, and a "today" line. This is how a PM sees float and what's driving the end date. |
 | **▤ Board** | Kanban by status (Not Started → In Progress → Blocked → Done). **Drag a card** between columns to update status in the field. This is the daily-standup / superintendent view. |
 | **▣ Calendar** | Month grid with task spans and milestone/inspection markers. This is the crew-dispatch and "what's happening this week" view. |
+| **☷ Resources** | Resource-leveling view — one row per crew, their tasks lane-packed so over-allocation is visible, with double-booked tasks ringed in red. This is the "who's overcommitted" view. |
 | **▥ Cost / EVM** | Earned-Value dashboard — BAC/PV/EV/AC, CPI & SPI, cost/schedule variances, and a forecast at completion (EAC/VAC), with a cost-performance S-curve and a per-project table. This is the controls/finance view. |
 
 ## Run it
@@ -53,6 +54,7 @@ views changes.
 | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
 | `GET /api/audit` | recent activity log (write role) |
+| `GET /api/tasks/:id/history` | full audit trail for one task (read) |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -158,6 +160,20 @@ management. Open it from the **Activity** button in the header (pm+); it shows
 who did what, to which task/project, and when. `GET /api/audit` returns the most
 recent 200 entries (write role required).
 
+Each task also has its own **history timeline**: open a task and click *Show
+change history* (`GET /api/tasks/:id/history`, any authenticated user) to see
+every recorded change to just that task, newest first.
+
+### Resource leveling
+
+The **Resources** view lays each crew out on the timeline with their tasks
+**lane-packed** — if a crew is assigned to overlapping tasks, the extra lanes
+make the double-booking obvious and the conflicting bars are ringed in red. The
+KPI bar shows a live **Crew Conflicts** count, and the task editor warns inline
+when the crew + dates you pick collide with that crew's existing bookings
+(across all projects). Detection is pure and tested (`leveling.js`); the seed
+ships an intentionally unleveled schedule so conflicts show immediately.
+
 ### Earned-Value Management (CPI/SPI)
 
 Each task is **cost-loaded** (a `cost` = budget-at-completion and an `actualCost`
@@ -204,6 +220,7 @@ src/
                         #   normalizeState migration (imported by browser AND server)
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
     variance.js         # pure baseline-vs-actual schedule variance
+    leveling.js         # pure resource leveling: conflict detection + lane packing
     data.js             # browser store: identity, mutations + attribution,
                         #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
@@ -212,6 +229,7 @@ src/
       gantt.js          # time-scaled bars, SVG dep arrows, today line, drag-resize
       board.js          # drag-and-drop Kanban
       calendar.js       # month grid with spans + milestones
+      resources.js      # crew timeline with lane-packing + conflict highlighting
       cost.js           # earned-value dashboard + S-curve + per-project table
 ```
 
@@ -226,9 +244,9 @@ zero total float are flagged), not hard-coded.
 
 ## Roadmap (next sprints)
 
-- Resource leveling / crew over-allocation warnings
+- One-click auto-leveling (suggest shifts to resolve crew conflicts)
 - Baseline history (keep multiple baselines, compare across revisions)
-- Filterable / exportable audit log (CSV), per-task history timeline
+- Exportable audit log (CSV) + global activity filters
 - Notifications (email/webhook) on milestone slips or blocked tasks
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
@@ -237,4 +255,5 @@ zero total float are flagged), not hard-coded.
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·
 ✅ baseline vs. actual variance tracking ·
 ✅ authentication (scrypt + sessions) & role-based permissions ·
-✅ project-scoped permissions + in-app audit log.
+✅ project-scoped permissions + in-app audit log ·
+✅ resource leveling (crew conflict detection) + per-task history timeline.

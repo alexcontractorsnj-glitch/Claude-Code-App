@@ -216,9 +216,10 @@ async function handleUsers(req, res, target, actor) {
 
 // --- REST API ---------------------------------------------------------------
 async function handleApi(req, res, urlPath) {
-  const parts = urlPath.split('/').filter(Boolean);   // ['api', 'tasks', ':id?']
+  const parts = urlPath.split('/').filter(Boolean);   // ['api', 'tasks', ':id?', ':sub?']
   const resource = parts[1];
   const id = parts[2];
+  const sub = parts[3];
   const method = req.method;
 
   try {
@@ -293,6 +294,10 @@ async function handleApi(req, res, urlPath) {
     }
 
     if (resource === 'tasks') {
+      if (method === 'GET' && id && sub === 'history') {
+        // Full audit trail for one task (any authenticated user may view).
+        return send(res, 200, audit.filter((e) => e.targetId === id).reverse());
+      }
       if (method === 'POST') {
         const body = await readBody(req);
         const task = body.id ? body : makeTask(state.tasks, body);

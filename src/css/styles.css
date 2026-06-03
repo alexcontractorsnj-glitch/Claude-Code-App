@@ -302,6 +302,31 @@ body.dragging-gantt { user-select: none; cursor: grabbing; }
 .health.warn { background: rgba(245,166,35,.14); color: var(--accent-2); }
 .health.bad { background: rgba(255,77,79,.14); color: var(--red); }
 
+/* ===================== RESOURCES (leveling) ===================== */
+.res-name-row { display: flex; align-items: center; gap: 9px; padding: 0 14px; border-bottom: 1px solid var(--line-soft); }
+.res-name-row.over { border-left: 3px solid var(--red); padding-left: 11px; }
+.res-name-meta { flex: 1; min-width: 0; }
+.res-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-sub { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-conflict { font-size: 10.5px; font-weight: 800; color: var(--red); background: rgba(255,77,79,.14); padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+.res-bar { position: absolute; height: 22px; border-radius: 6px; border: 1px solid; overflow: hidden; cursor: pointer; display: flex; align-items: center; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+.res-bar:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.5); z-index: 5; }
+.res-bar.conflict { box-shadow: 0 0 0 2px var(--red), 0 2px 6px rgba(0,0,0,.3); }
+
+/* crew double-booking warning in the editor */
+.crew-warn { margin-top: 6px; font-size: 11.5px; color: #ffb4b5; background: rgba(255,77,79,.1); border: 1px solid rgba(255,77,79,.3); padding: 6px 9px; border-radius: 7px; line-height: 1.4; }
+
+/* per-task history in the editor */
+.hist-section { background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.hist-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); font-weight: 700; margin-bottom: 8px; }
+.hist-body { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+.hist-row { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; }
+.hist-icon { width: 18px; text-align: center; flex-shrink: 0; }
+.hist-text { flex: 1; line-height: 1.4; }
+.hist-detail { color: var(--text-faint); }
+.hist-time { font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+.hist-empty { font-size: 12px; color: var(--text-faint); }
+
 /* ===================== AUTH / LOGIN ===================== */
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .login-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; padding: 30px; width: 380px; max-width: 100%; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }

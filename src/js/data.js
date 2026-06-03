@@ -163,6 +163,7 @@ class Store {
   setUserRole(username, role) { return this.updateUser(username, { role }); }
   deleteUser(username) { return api('DELETE', '/users/' + username).then(() => true); }
   listAudit() { return api('GET', '/audit').then((r) => r.data); }
+  taskHistory(id) { return api('GET', '/tasks/' + id + '/history').then((r) => r.data); }
 
   // ---- team identity (attribution, not authentication) ----
   _loadUser() {

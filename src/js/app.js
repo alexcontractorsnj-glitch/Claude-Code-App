@@ -9,7 +9,9 @@ import { renderGantt } from './views/gantt.js';
 import { renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderCost } from './views/cost.js';
+import { renderResources } from './views/resources.js';
 import { scheduleVariance, taskVariance } from './variance.js';
+import { levelingSummary, assignmentConflicts } from './leveling.js';
 
 const ctx = {
   view: 'gantt',
@@ -35,6 +37,7 @@ const VIEWS = {
   gantt: { label: 'Gantt', icon: '▦', render: renderGantt },
   board: { label: 'Board', icon: '▤', render: renderBoard },
   calendar: { label: 'Calendar', icon: '▣', render: renderCalendar },
+  resources: { label: 'Resources', icon: '☷', render: renderResources },
   cost: { label: 'Cost / EVM', icon: '▥', render: renderCost },
 };
 
@@ -78,6 +81,9 @@ function renderKpis() {
     kpi('Overdue', String(overdue), overdue ? 'bad' : ''),
     kpi('Critical Path', crit + ' tasks', 'crit'),
   );
+
+  const lvl = levelingSummary(tasks);
+  bar.append(kpi('Crew Conflicts', String(lvl.conflictPairs), lvl.conflictPairs ? 'bad' : 'good'));
 
   // Baseline variance KPIs replace the static contract value when a baseline
   // exists (slip is more actionable to a PM than the headline number).
@@ -237,6 +243,29 @@ function metaPanel(t) {
   return rows.length ? el('div', { class: 'meta-panel' }, rows) : null;
 }
 
+// Lazy-loaded per-task audit trail shown inside the editor.
+function historySection(taskId) {
+  const body = el('div', { class: 'hist-body' });
+  const btn = el('button', { class: 'btn ghost sm', onclick: load }, 'Show change history');
+  function load() {
+    btn.disabled = true; btn.textContent = 'Loading…';
+    store.taskHistory(taskId).then((entries) => {
+      btn.remove();
+      if (!entries.length) { body.appendChild(el('div', { class: 'hist-empty' }, 'No recorded changes.')); return; }
+      entries.forEach((e) => {
+        const meta = ACTION_META[e.action] || { icon: '•', label: e.action };
+        body.appendChild(el('div', { class: 'hist-row' }, [
+          el('span', { class: 'hist-icon' }, meta.icon),
+          el('span', { class: 'hist-text' }, [el('b', {}, e.user), ' ', meta.label,
+            e.detail ? el('span', { class: 'hist-detail' }, ' — ' + e.detail) : null]),
+          el('span', { class: 'hist-time', title: e.ts }, ago(e.ts) || ''),
+        ]));
+      });
+    }).catch(() => { btn.disabled = false; btn.textContent = 'Failed — retry'; });
+  }
+  return el('div', { class: 'hist-section' }, [el('div', { class: 'hist-head' }, 'History'), btn, body]);
+}
+
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
   const isNew = taskId == null;
@@ -280,6 +309,22 @@ function openEditor(taskId) {
   f.deps = el('select', { class: 'select multi', multiple: true, size: Math.min(6, Math.max(3, depCandidates.length)) },
     depCandidates.map((x) => { const o = el('option', { value: x.id }, x.name); o.selected = t.dependencies.includes(x.id); return o; }));
 
+  // Live crew double-booking warning (resource leveling).
+  const crewWarn = el('div', { class: 'crew-warn', style: { display: 'none' } });
+  function updateCrewWarn() {
+    const cid = f.crew.value;
+    if (!cid || f.milestone.checked) { crewWarn.style.display = 'none'; return; }
+    const end = f.milestone.checked ? f.start.value : f.end.value;
+    const cf = assignmentConflicts(store.tasks('all'), cid, f.start.value, end, taskId);
+    if (cf.length) {
+      const names = cf.slice(0, 2).map((x) => x.name).join(', ');
+      crewWarn.textContent = `⚠ ${store.crew(cid).name} is already booked on ${names}${cf.length > 2 ? ` +${cf.length - 2} more` : ''} during these dates.`;
+      crewWarn.style.display = 'block';
+    } else { crewWarn.style.display = 'none'; }
+  }
+  [f.crew, f.start, f.end].forEach((n) => n.addEventListener('change', updateCrewWarn));
+  f.milestone.addEventListener('change', updateCrewWarn);
+
   const modal = el('div', { class: 'modal' }, [
     el('div', { class: 'modal-head' }, [
       el('h2', {}, isNew ? 'New Work Package' : (RW ? 'Edit Work Package' : 'Work Package')),
@@ -289,7 +334,7 @@ function openEditor(taskId) {
     el('div', { class: 'modal-body' }, [
       field('Task name', f.name),
       el('div', { class: 'form-row' }, [field('Project', f.project), field('Trade', f.trade)]),
-      field('Assigned crew', f.crew),
+      field('Assigned crew', el('div', {}, [f.crew, crewWarn])),
       el('div', { class: 'form-row' }, [field('Start', f.start), field('Finish', f.end)]),
       el('div', { class: 'form-row' }, [
         field('Status', f.status),
@@ -302,6 +347,7 @@ function openEditor(taskId) {
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
       !isNew ? metaPanel(t) : null,
+      (!isNew && store.mode === 'remote') ? historySection(taskId) : null,
     ]),
     el('div', { class: 'modal-foot' }, [
       (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this task?')) { store.deleteTask(taskId); close(); } } }, 'Delete') : el('span'),
@@ -316,6 +362,7 @@ function openEditor(taskId) {
   document.body.appendChild(overlay);
   // Read-only: lock every field so a viewer can inspect but not change.
   if (!RW) modal.querySelectorAll('input, select, textarea').forEach((n) => { n.disabled = true; });
+  if (RW) updateCrewWarn();
   setTimeout(() => { if (RW) f.name.focus(); }, 30);
 
   function collect() {
