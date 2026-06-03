@@ -3,6 +3,7 @@
 //  Pure DOM/SVG, no libraries. Bars are positioned by date against a day grid.
 // ============================================================================
 import { store, TRADES, STATUSES, Dates, computeCriticalPath } from '../data.js';
+import { taskVariance } from '../variance.js';
 import { el, clear, pct, shade } from '../utils.js';
 
 const DAY_W = 26;       // px per day
@@ -247,6 +248,21 @@ export function renderGantt(mount, ctx) {
     const isCrit = critical.has(t.id);
     const open = (node) => () => { if (node._suppressClick) { node._suppressClick = false; return; } ctx.openTask(t.id); };
 
+    // Baseline ghost bar (planned schedule) drawn beneath the live bar.
+    const variance = (ctx.showBaseline && store.baseline) ? taskVariance(t, store.baseline) : null;
+    if (variance) {
+      const bx = xOf(variance.baselineStart);
+      const bw = (Dates.diffDays(variance.baselineStart, variance.baselineEnd) + 1) * DAY_W;
+      barsLayer.appendChild(el('div', {
+        class: 'baseline-bar' + (variance.finishVar > 0 ? ' late' : variance.finishVar < 0 ? ' early' : ''),
+        style: { left: bx + 'px', top: (y + 27) + 'px', width: Math.max(DAY_W, bw) + 'px' },
+        title: `Baseline: ${Dates.fmtLong(variance.baselineStart)} → ${Dates.fmtLong(variance.baselineEnd)}`,
+      }));
+    }
+    const slipNote = variance && variance.finishVar
+      ? `\nBaseline finish: ${Dates.fmtLong(variance.baselineEnd)} (${variance.finishVar > 0 ? '+' : ''}${variance.finishVar}d ${variance.finishVar > 0 ? 'late' : 'early'})`
+      : '';
+
     if (t.milestone) {
       const ms = el('div', {
         class: 'milestone' + (isCrit ? ' critical' : ''),
@@ -266,7 +282,7 @@ export function renderGantt(mount, ctx) {
         left: x + 'px', top: y + 'px', width: Math.max(DAY_W, w) + 'px',
         background: shade(trade.color, 0.55), borderColor: trade.color,
       },
-      title: `${t.name}\n${Dates.fmtLong(t.start)} → ${Dates.fmtLong(t.end)}\n${pct(t.progress)} complete${isCrit ? ' • CRITICAL PATH' : ''}\nDrag to reschedule · drag edges to resize`,
+      title: `${t.name}\n${Dates.fmtLong(t.start)} → ${Dates.fmtLong(t.end)}\n${pct(t.progress)} complete${isCrit ? ' • CRITICAL PATH' : ''}${slipNote}\nDrag to reschedule · drag edges to resize`,
     }, [
       el('div', { class: 'bar-fill', style: { width: t.progress + '%', background: trade.color } }),
       el('span', { class: 'bar-label' }, t.name),

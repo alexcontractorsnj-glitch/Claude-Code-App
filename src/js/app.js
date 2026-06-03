@@ -9,12 +9,14 @@ import { renderGantt } from './views/gantt.js';
 import { renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderCost } from './views/cost.js';
+import { scheduleVariance, taskVariance } from './variance.js';
 
 const ctx = {
   view: 'gantt',
   projectId: 'all',
   tradeFilter: 'all',
   showCritical: true,
+  showBaseline: true,
   calMonth: Dates.iso(new Date()).slice(0, 7),
   filter: (t) => ctx.tradeFilter === 'all' || t.trade === ctx.tradeFilter,
   openTask: (id) => openEditor(id),
@@ -73,8 +75,20 @@ function renderKpis() {
     kpi('Blocked', String(blocked), blocked ? 'bad' : ''),
     kpi('Overdue', String(overdue), overdue ? 'bad' : ''),
     kpi('Critical Path', crit + ' tasks', 'crit'),
-    kpi('Contract Value', money(budget)),
   );
+
+  // Baseline variance KPIs replace the static contract value when a baseline
+  // exists (slip is more actionable to a PM than the headline number).
+  const sv = scheduleVariance(tasks, store.baseline);
+  if (sv && sv.counted) {
+    const slip = Math.round(sv.avgFinishVar);
+    bar.append(
+      kpi('Behind Baseline', `${sv.slipped} tasks`, sv.slipped ? 'bad' : 'good'),
+      kpi('Avg Finish Slip', `${slip >= 0 ? '+' : ''}${slip}d`, slip > 0 ? 'bad' : 'good'),
+    );
+  } else {
+    bar.append(kpi('Contract Value', money(budget)));
+  }
 }
 
 // --- Header / toolbar -------------------------------------------------------
@@ -94,6 +108,7 @@ function renderHeader(root) {
           onclick: () => { ctx.view = key; renderHeader(root); renderActiveView(); },
         }, [el('span', { class: 'view-icon' }, v.icon), v.label]))),
     el('div', { class: 'header-actions' }, [
+      identityChip(root),
       el('button', { class: 'btn primary', onclick: () => openEditor(null) }, '+ New Task'),
     ]),
   ]);
@@ -115,11 +130,9 @@ function renderHeader(root) {
       el('label', { class: 'tb-label' }, 'Trade'), tradeSel,
     ]),
     el('div', { class: 'toolbar-right' }, [
-      ctx.view === 'gantt' ? el('label', { class: 'toggle' }, [
-        (() => { const c = el('input', { type: 'checkbox', onchange: (e) => { ctx.showCritical = e.target.checked; renderActiveView(); } });
-          c.checked = ctx.showCritical; return c; })(),
-        el('span', { class: 'toggle-track' }), 'Critical Path',
-      ]) : null,
+      baselineControls(),
+      ctx.view === 'gantt' ? toggle('Critical Path', ctx.showCritical, (v) => { ctx.showCritical = v; renderActiveView(); }) : null,
+      ctx.view === 'gantt' && store.baseline ? toggle('Baseline', ctx.showBaseline, (v) => { ctx.showBaseline = v; renderActiveView(); }) : null,
       el('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset all schedule data to the seeded sample?')) store.reset(); } }, '↺ Reset Demo'),
     ]),
   ]);
@@ -129,6 +142,77 @@ function renderHeader(root) {
   if (bar) bar.replaceWith(header); else root.appendChild(header);
   let tb = root.querySelector('.toolbar');
   if (tb) tb.replaceWith(toolbar); else header.after(toolbar);
+}
+
+// Reusable iOS-style toggle.
+function toggle(label, checked, onChange) {
+  const c = el('input', { type: 'checkbox', onchange: (e) => onChange(e.target.checked) });
+  c.checked = checked;
+  return el('label', { class: 'toggle' }, [c, el('span', { class: 'toggle-track' }), label]);
+}
+
+// Team identity chip (attribution, not authentication).
+function identityChip(root) {
+  return el('button', {
+    class: 'identity', title: 'Click to change who you are (used to attribute edits)',
+    onclick: () => {
+      const name = window.prompt('Your name / role (used to attribute schedule edits):', store.user);
+      if (name != null) { store.setUser(name); renderHeader(root); }
+    },
+  }, [
+    el('span', { class: 'identity-avatar' }, store.user.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase()),
+    el('span', { class: 'identity-name' }, store.user),
+  ]);
+}
+
+// Baseline save/clear control with the saved-date indicator.
+function baselineControls() {
+  const b = store.baseline;
+  if (!b) {
+    return el('button', { class: 'btn ghost', title: 'Snapshot the current schedule as the plan to measure slip against',
+      onclick: () => store.saveBaseline() }, '📌 Save Baseline');
+  }
+  return el('div', { class: 'baseline-ctl' }, [
+    el('span', { class: 'baseline-tag', title: `Baseline by ${b.savedBy || 'Unknown'}` }, `Baseline · ${Dates.fmt(b.savedAt)}`),
+    el('button', { class: 'btn ghost sm', onclick: () => store.saveBaseline() }, 'Re-baseline'),
+    el('button', { class: 'btn ghost sm', onclick: () => { if (confirm('Clear the saved baseline?')) store.clearBaseline(); } }, 'Clear'),
+  ]);
+}
+
+// Relative "time ago" for attribution timestamps.
+function ago(iso) {
+  if (!iso) return null;
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+// Read-only panel in the editor: baseline variance + edit attribution.
+function metaPanel(t) {
+  const rows = [];
+  const v = taskVariance(t, store.baseline);
+  if (v) {
+    const slip = v.finishVar;
+    const cls = slip > 0 ? 'neg' : (slip < 0 ? 'pos' : '');
+    rows.push(el('div', { class: 'meta-row' }, [
+      el('span', { class: 'meta-k' }, 'Baseline'),
+      el('span', { class: 'meta-v' }, `${Dates.fmt(v.baselineStart)} → ${Dates.fmt(v.baselineEnd)}`),
+    ]));
+    rows.push(el('div', { class: 'meta-row' }, [
+      el('span', { class: 'meta-k' }, 'Finish variance'),
+      el('span', { class: 'meta-v ' + cls },
+        slip === 0 ? 'On plan' : `${slip > 0 ? '+' : ''}${slip} day${Math.abs(slip) === 1 ? '' : 's'} ${slip > 0 ? 'late' : 'early'}`),
+    ]));
+  }
+  if (t.lastEditedBy) {
+    rows.push(el('div', { class: 'meta-row' }, [
+      el('span', { class: 'meta-k' }, 'Last edited'),
+      el('span', { class: 'meta-v' }, `${t.lastEditedBy}${t.lastEditedAt ? ' · ' + ago(t.lastEditedAt) : ''}`),
+    ]));
+  }
+  return rows.length ? el('div', { class: 'meta-panel' }, rows) : null;
 }
 
 // --- Task editor modal ------------------------------------------------------
@@ -185,6 +269,7 @@ function openEditor(taskId) {
       ]),
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
+      !isNew ? metaPanel(t) : null,
     ]),
     el('div', { class: 'modal-foot' }, [
       !isNew ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this task?')) { store.deleteTask(taskId); close(); } } }, 'Delete') : el('span'),

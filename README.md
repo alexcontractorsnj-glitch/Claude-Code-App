@@ -48,6 +48,8 @@ views changes.
 | `PATCH /api/tasks/:id` | update (progress/status coherence applied server-side) |
 | `DELETE /api/tasks/:id` | delete + strip dangling dependency refs |
 | `POST /api/reset` | reseed the sample data |
+| `POST /api/baseline` | snapshot the current schedule as the baseline |
+| `DELETE /api/baseline` | clear the baseline |
 
 The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
 **`src/js/seed.js`** and is imported by *both* the browser and the server, so the
@@ -66,6 +68,35 @@ The API is safe for two people editing at once:
   the server answers **`304 Not Modified`** when nothing changed, or sends the new
   state when another user edits — so a change in one tab appears in another within
   the poll interval. Open the app in two browser windows to see it.
+
+### Baseline vs. actual variance
+
+Snapshot the current schedule as a **baseline** (the toolbar's *Save Baseline* /
+*Re-baseline* / *Clear*), then the app measures slip against it:
+
+- The Gantt draws a **ghost baseline bar** beneath each task (grey = on plan,
+  red = finishing late, green = early); the bar's tooltip shows the day slip.
+  Toggle it with the **Baseline** switch.
+- The KPI bar swaps in **Behind Baseline** (task count) and **Avg Finish Slip**
+  (days) once a baseline exists.
+- The task dialog shows that task's baseline dates and finish variance.
+
+The demo ships with a baseline already captured and a few work packages drifted,
+so the variance is visible immediately. `POST /api/baseline` snapshots server-side;
+`DELETE /api/baseline` clears it.
+
+### Team identity & edit attribution
+
+Pick who you are from the **identity chip** in the header (stored locally). Every
+edit is stamped with your name + time and sent to the server via an `X-User`
+header; tasks show **who last edited them** (in the dialog and on board cards),
+and a concurrency conflict toast **names the person** who got there first.
+
+> **Honest scope:** this is *attribution for a trusted team*, **not
+> authentication**. The server trusts the `X-User` header — there are no
+> passwords, sessions, or access control. Real auth (sessions/JWT, per-user
+> permissions) is the production step; this layer makes collaborative editing
+> legible without pretending to be a security boundary.
 
 ### Earned-Value Management (CPI/SPI)
 
@@ -111,8 +142,9 @@ src/
     seed.js             # shared domain core: model, seed, date math, task rules,
                         #   normalizeState migration (imported by browser AND server)
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
-    data.js             # browser store: selectors, mutations, optimistic locking,
-                        #   live polling, conflict handling, CPM critical-path
+    variance.js         # pure baseline-vs-actual schedule variance
+    data.js             # browser store: identity, mutations + attribution,
+                        #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
     app.js              # controller: router, filters, KPIs, task editor, toasts
     views/
@@ -134,10 +166,13 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Resource leveling / crew over-allocation warnings
-- Baseline vs. actual variance tracking (save a baseline, chart drift)
-- Auth + per-user attribution on edits (who changed what, when)
+- Real authentication (sessions/JWT) + per-user permissions, hardening the
+  current trusted-header attribution into an actual access boundary
+- Baseline history (keep multiple baselines, compare across revisions)
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
-✅ earned-value (CPI/SPI) cost reporting with S-curve.
+✅ earned-value (CPI/SPI) cost reporting with S-curve ·
+✅ baseline vs. actual variance tracking ·
+✅ team identity & edit attribution.

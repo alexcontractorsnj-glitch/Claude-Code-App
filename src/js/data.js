@@ -18,6 +18,7 @@ import {
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
 
 const STORAGE_KEY = 'buildflow.schedule.v1';
+const USER_KEY = 'buildflow.user';
 const API = '/api';
 const API_TIMEOUT = 2500;
 const POLL_MS = 4000;            // how often to check the server for others' edits
@@ -65,9 +66,23 @@ class Store {
     this.syncing = false;
     this.rev = null;              // last global revision seen from the server
     this._poll = null;
+    this.user = this._loadUser(); // team identity for edit attribution
     this.state = normalizeState(this._loadLocal());
     this._hydrateRemote();        // fire-and-forget; re-emits if server responds
   }
+
+  // ---- team identity (attribution, not authentication) ----
+  _loadUser() {
+    try { return localStorage.getItem(USER_KEY) || 'Site Office'; }
+    catch { return 'Site Office'; }
+  }
+  setUser(name) {
+    this.user = (name || '').trim() || 'Site Office';
+    try { localStorage.setItem(USER_KEY, this.user); } catch { /* non-fatal */ }
+    this._emitStatus();
+  }
+  _stamp() { return { lastEditedBy: this.user, lastEditedAt: new Date().toISOString() }; }
+  _userHeader() { return { 'X-User': encodeURIComponent(this.user) }; }
 
   // ---- persistence layers ----
   _loadLocal() {
@@ -153,19 +168,22 @@ class Store {
   task(id) { return this.state.tasks.find((t) => t.id === id); }
   crew(id) { return this.state.crews.find((c) => c.id === id) || null; }
   project(id) { return this.state.projects.find((p) => p.id === id) || null; }
+  get baseline() { return this.state.baseline || null; }
 
   // ---- mutations (optimistic: local first, then sync) ----
-  // PATCH carries If-Match with the task's known rev. A 409 means someone else
+  // Each edit is stamped with the current user + time (attribution). PATCH
+  // carries If-Match with the task's known rev — a 409 means someone else
   // changed it first → we re-hydrate from the server and tell the user.
   updateTask(id, patch) {
     const t = this.task(id);
     if (!t) return;
     const baseRev = t.rev || 1;
-    applyTaskPatch(t, patch);
+    const stamped = { ...patch, ...this._stamp() };
+    applyTaskPatch(t, stamped);
     this._emit();
     if (this.mode !== 'remote') return;
     this._setSyncing(true);
-    api('PATCH', '/tasks/' + id, patch, { 'If-Match': '"' + baseRev + '"' })
+    api('PATCH', '/tasks/' + id, stamped, { 'If-Match': '"' + baseRev + '"', ...this._userHeader() })
       .then(({ data, etag }) => {
         const cur = this.task(id);
         if (cur && data && data.rev != null) cur.rev = data.rev;
@@ -175,7 +193,8 @@ class Store {
       .catch((err) => {
         this._setSyncing(false);
         if (err.status === 409) {
-          this._notify('That task was just changed by someone else — reloaded the latest.', 'warn');
+          const who = err.data && err.data.current && err.data.current.lastEditedBy;
+          this._notify(`“${t.name}” was just changed by ${who || 'another user'} — reloaded the latest.`, 'warn');
           this._hydrateRemote();
         } else {
           this.mode = 'local';
@@ -185,16 +204,44 @@ class Store {
   }
 
   addTask(partial) {
-    const full = makeTask(this.state.tasks, partial);
+    const full = makeTask(this.state.tasks, { ...partial, ...this._stamp() });
     this.state.tasks.push(full);
     this._emit();
     if (this.mode === 'remote') {
       this._setSyncing(true);
-      api('POST', '/tasks', full)
+      api('POST', '/tasks', full, this._userHeader())
         .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
         .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
     }
     return full;
+  }
+
+  // ---- baseline (planned vs. actual) ----
+  saveBaseline() {
+    const snap = {
+      label: 'Baseline', savedAt: Dates.today(), savedBy: this.user,
+      tasks: Object.fromEntries(this.state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
+    };
+    this.state.baseline = snap;
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('POST', '/baseline', { savedBy: this.user }, this._userHeader())
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+    }
+    this._notify('Baseline saved — variance is now measured against today’s plan.', 'info');
+  }
+
+  clearBaseline() {
+    this.state.baseline = null;
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/baseline')
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch(() => { this.mode = 'local'; this._setSyncing(false); this._emitStatus(); });
+    }
   }
 
   deleteTask(id) {

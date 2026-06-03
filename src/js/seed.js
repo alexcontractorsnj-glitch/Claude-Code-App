@@ -87,6 +87,7 @@ export function seedState() {
       start: s, end: e, dependencies: deps, progress,
       status, milestone, priority: 'normal',
       cost: 0, actualCost: 0, rev: 1,   // cost loaded below; rev for optimistic locking
+      lastEditedBy: null, lastEditedAt: null,
     };
   };
 
@@ -149,7 +150,21 @@ export function seedState() {
     });
   });
 
-  return { projects, tasks, crews, version: SCHEMA_VERSION, rev: 1 };
+  // --- Capture a baseline from the planned dates, then drift "actuals" ------
+  // A real project's current schedule slips from its original plan; we snapshot
+  // the plan as the baseline, then push a few work packages out so the variance
+  // view + Gantt ghost bars show meaningful slip out of the box.
+  const baseline = {
+    label: 'Original Plan', savedAt: start, savedBy: 'Planning',
+    tasks: Object.fromEntries(tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost }])),
+  };
+  const drift = { t4: 2, t5: 3, t7: 4, t9: 3, t10: 6, t11: 4, t16: 3, t22: 4, t23: 7, t24: 5 };
+  tasks.forEach((t) => {
+    const d = drift[t.id];
+    if (d) { t.start = Dates.addDays(t.start, d); t.end = Dates.addDays(t.end, d); }
+  });
+
+  return { projects, tasks, crews, baseline, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // --- Pure helpers shared by client + server --------------------------------
@@ -172,6 +187,8 @@ export function makeTask(existing, partial) {
     cost: partial.cost || 0,
     actualCost: partial.actualCost || 0,
     rev: 1,
+    lastEditedBy: partial.lastEditedBy || null,
+    lastEditedAt: partial.lastEditedAt || null,
   };
 }
 
@@ -194,10 +211,13 @@ export function applyTaskPatch(t, patch) {
 export function normalizeState(state) {
   if (!state || !Array.isArray(state.tasks)) return seedState();
   if (state.rev == null) state.rev = 1;
+  if (state.baseline === undefined) state.baseline = null;
   state.tasks.forEach((t) => {
     if (t.cost == null) t.cost = 0;
     if (t.actualCost == null) t.actualCost = 0;
     if (t.rev == null) t.rev = 1;
+    if (t.lastEditedBy === undefined) t.lastEditedBy = null;
+    if (t.lastEditedAt === undefined) t.lastEditedAt = null;
     if (!Array.isArray(t.dependencies)) t.dependencies = [];
   });
   return state;

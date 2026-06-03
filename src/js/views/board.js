@@ -62,6 +62,7 @@ export function renderBoard(mount, ctx) {
           ]),
           el('span', { class: 'card-progress-label' }, pct(t.progress)),
         ]),
+        t.lastEditedBy ? el('div', { class: 'card-edit' }, `✎ ${t.lastEditedBy}`) : null,
       ]);
 
       card.addEventListener('dragstart', (e) => {
