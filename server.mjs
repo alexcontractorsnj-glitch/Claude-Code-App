@@ -22,6 +22,7 @@ import { buildApplication, appsForProject } from './src/js/billing.js';
 import { makeDoc, DOC_KINDS } from './src/js/docs.js';
 import { makeChangeOrder, CO_STATUSES } from './src/js/changeorders.js';
 import { makeReport } from './src/js/fieldreports.js';
+import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -448,6 +449,7 @@ async function handleApi(req, res, urlPath) {
         if (!canEditProject(actor, r.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
         const body = await readBody(req);
         ['date', 'weather', 'tempLow', 'tempHigh', 'manpower', 'workPerformed', 'deliveries', 'delays', 'notes'].forEach((k) => { if (body[k] !== undefined) r[k] = body[k]; });
+        if (body.attachments !== undefined) r.attachments = cleanAttachments(body.attachments, actor.name);
         r.rev = (r.rev || 1) + 1;
         bump(); await persistState();
         logAudit(actor, 'report.update', { targetId: r.id, targetName: `Daily report ${r.date}`, projectId: r.projectId });
@@ -460,6 +462,42 @@ async function handleApi(req, res, urlPath) {
         state.reports = state.reports.filter((x) => x.id !== id);
         bump(); await persistState();
         logAudit(actor, 'report.delete', { targetName: `Daily report ${r.date}`, projectId: r.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'punch') {
+      if (!Array.isArray(state.punch)) state.punch = [];
+      if (method === 'POST' && !id) {
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const p = makePunchItem(state.punch, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.punch.push(p);
+        bump(); await persistState();
+        logAudit(actor, 'punch.create', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId });
+        return send(res, 201, p, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const p = state.punch.find((x) => x.id === id);
+        if (!p) return send(res, 404, { error: 'punch item not found' });
+        if (!canEditProject(actor, p.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'location', 'trade', 'status', 'priority', 'assignedTo', 'taskId'].forEach((k) => { if (body[k] !== undefined) p[k] = body[k]; });
+        if (body.attachments !== undefined) p.attachments = cleanAttachments(body.attachments, actor.name);
+        if (!PUNCH_STATUSES.includes(p.status)) p.status = 'open';
+        if (!PUNCH_PRIORITIES.includes(p.priority)) p.priority = 'normal';
+        p.updatedBy = actor.name; p.updatedAt = new Date().toISOString(); p.rev = (p.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'punch.update', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId, detail: `status ${p.status}` });
+        return send(res, 200, p, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const p = state.punch.find((x) => x.id === id);
+        if (!p) return send(res, 404, { error: 'punch item not found' });
+        if (!canEditProject(actor, p.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.punch = state.punch.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'punch.delete', { targetName: `${p.number} ${p.title}`, projectId: p.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }

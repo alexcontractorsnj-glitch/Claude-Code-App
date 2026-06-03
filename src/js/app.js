@@ -13,9 +13,11 @@ import { renderResources } from './views/resources.js';
 import { renderBilling } from './views/billing.js';
 import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
+import { renderPunch } from './views/punch.js';
 import { DOC_KINDS } from './docs.js';
 import { CO_STATUSES } from './changeorders.js';
 import { WEATHER } from './fieldreports.js';
+import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -42,6 +44,7 @@ const ctx = {
   openDoc: (id, kind) => openDocEditor(id, kind),
   openCo: (id, projectId) => openCoEditor(id, projectId),
   openReport: (id) => openReportEditor(id),
+  openPunch: (id) => openPunchEditor(id),
   billingApp: null,
 };
 
@@ -59,6 +62,7 @@ const VIEWS = {
   billing: { label: 'Billing', icon: '＄', render: renderBilling },
   documents: { label: 'Documents', icon: '✉', render: renderDocuments },
   field: { label: 'Field', icon: '☰', render: renderField },
+  punch: { label: 'Punch', icon: '✔', render: renderPunch },
 };
 
 let viewMount; // the area where the active view renders
@@ -559,7 +563,7 @@ function openLevelPreview() {
 const SEV_LABEL = { high: 'Critical', medium: 'Attention', low: 'Watch' };
 
 function alertBell() {
-  const s = alertSummary(computeAlerts(store.tasks('all'), store.baseline, store.docs));
+  const s = alertSummary(computeAlerts(store.tasks('all'), store.baseline, store.docs, store.punch));
   return el('button', { class: 'alert-bell' + (s.high ? ' urgent' : ''), title: `${s.total} schedule alert${s.total === 1 ? '' : 's'}`, onclick: () => openAlertsPanel() }, [
     el('span', { class: 'bell-ico' }, '🔔'),
     s.total ? el('span', { class: 'bell-badge' + (s.high ? ' high' : '') }, String(s.total)) : null,
@@ -568,7 +572,7 @@ function alertBell() {
 
 function openAlertsPanel() {
   const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
-  const alerts = computeAlerts(store.tasks('all'), store.baseline, store.docs);
+  const alerts = computeAlerts(store.tasks('all'), store.baseline, store.docs, store.punch);
   const body = el('div', { class: 'alert-list' });
   if (!alerts.length) {
     body.appendChild(el('div', { class: 'empty' }, '✓ No alerts — nothing overdue, blocked, or slipping.'));
@@ -579,7 +583,7 @@ function openAlertsPanel() {
       body.appendChild(el('div', { class: 'alert-group-head' }, [el('span', { class: 'sev-dot sev-' + sev }), `${SEV_LABEL[sev]} (${group.length})`]));
       group.forEach((a) => {
         const proj = store.project(a.projectId);
-        body.appendChild(el('div', { class: 'alert-row', onclick: () => { close(); if (a.docId) ctx.openDoc(a.docId); else if (a.taskId) ctx.openTask(a.taskId); } }, [
+        body.appendChild(el('div', { class: 'alert-row', onclick: () => { close(); if (a.docId) ctx.openDoc(a.docId); else if (a.punchId) ctx.openPunch(a.punchId); else if (a.taskId) ctx.openTask(a.taskId); } }, [
           el('span', { class: 'sev-dot sev-' + a.severity }),
           el('div', { class: 'alert-main' }, [
             el('div', { class: 'alert-title' }, [a.title, proj ? el('span', { class: 'alert-proj', style: { color: proj.color } }, ' · ' + proj.name) : null]),
@@ -624,7 +628,87 @@ const ACTION_META = {
   'report.create': { icon: '☰', label: 'filed report' },
   'report.update': { icon: '✎', label: 'updated report' },
   'report.delete': { icon: '🗑', label: 'deleted report' },
+  'punch.create': { icon: '✔', label: 'added punch item' },
+  'punch.update': { icon: '✎', label: 'updated punch item' },
+  'punch.delete': { icon: '🗑', label: 'deleted punch item' },
 };
+
+// Reusable attachments-by-reference editor (name + URL + caption rows).
+function attachmentsEditor(initial) {
+  const rows = el('div', { class: 'attach-rows' });
+  const live = [];
+  function rowEl(a) {
+    const name = el('input', { class: 'input sm', value: a.name || '', placeholder: 'name' });
+    const url = el('input', { class: 'input sm', value: a.url || '', placeholder: 'https://… link to photo/file' });
+    const cap = el('input', { class: 'input sm', value: a.caption || '', placeholder: 'caption' });
+    const rec = { name, url, cap }; live.push(rec);
+    const r = el('div', { class: 'attach-row' }, [name, url, cap,
+      el('button', { class: 'btn ghost sm', type: 'button', onclick: () => { const i = live.indexOf(rec); if (i >= 0) live.splice(i, 1); r.remove(); } }, '✕')]);
+    return r;
+  }
+  (initial || []).forEach((a) => rows.appendChild(rowEl(a)));
+  const wrap = el('div', { class: 'form-field' }, [
+    el('label', {}, 'Attachments (links — no upload in this demo)'),
+    rows,
+    el('button', { class: 'btn ghost sm', type: 'button', onclick: () => rows.appendChild(rowEl({})) }, '+ Add attachment'),
+  ]);
+  return { wrap, get: () => live.map((r) => ({ name: r.name.value.trim(), url: r.url.value.trim(), caption: r.cap.value.trim() })).filter((a) => a.url || a.name) };
+}
+
+// --- Punch-item editor ------------------------------------------------------
+function openPunchEditor(pid) {
+  const isNew = pid == null;
+  const editable = store.editableProjects();
+  if (isNew && (!store.can('write') || !editable.length)) return;
+  const p = isNew
+    ? { projectId: (ctx.projectId !== 'all' && editable.some((x) => x.id === ctx.projectId)) ? ctx.projectId : (editable[0] && editable[0].id), title: '', location: '', trade: 'finishes', status: 'open', priority: 'normal', assignedTo: '', taskId: null, attachments: [] }
+    : { ...store.punch.find((x) => x.id === pid) };
+  const RW = isNew ? store.can('write') : store.canEditProject(p.projectId);
+  const projOptions = isNew ? editable : store.projects.filter((x) => x.id === p.projectId || store.canEditProject(x.id));
+
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const f = {};
+  const field = (label, input) => el('div', { class: 'form-field' }, [el('label', {}, label), input]);
+  f.title = el('input', { class: 'input', type: 'text', value: p.title || '', placeholder: 'e.g. Touch-up paint at stair 2' });
+  f.project = el('select', { class: 'select' }, projOptions.map((x) => el('option', { value: x.id }, x.name))); f.project.value = p.projectId;
+  f.status = el('select', { class: 'select' }, PUNCH_STATUSES.map((s) => el('option', { value: s }, s))); f.status.value = p.status;
+  f.priority = el('select', { class: 'select' }, PUNCH_PRIORITIES.map((s) => el('option', { value: s }, s))); f.priority.value = p.priority;
+  f.trade = el('select', { class: 'select' }, Object.entries(TRADES).map(([k, v]) => el('option', { value: k }, v.label))); f.trade.value = p.trade;
+  f.location = el('input', { class: 'input', type: 'text', value: p.location || '', placeholder: 'Location / grid' });
+  f.assignedTo = el('input', { class: 'input', type: 'text', value: p.assignedTo || '', placeholder: 'Responsible crew/sub' });
+  const taskOpts = () => [el('option', { value: '' }, '— none —'), ...store.tasks(f.project.value).map((t) => el('option', { value: t.id }, t.name))];
+  f.task = el('select', { class: 'select' }, taskOpts()); f.task.value = p.taskId || '';
+  f.project.addEventListener('change', () => { clear(f.task); taskOpts().forEach((o) => f.task.appendChild(o)); });
+  const attach = attachmentsEditor(p.attachments);
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, isNew ? 'New Punch Item' : 'Punch · ' + p.number), !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null, el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, [
+      field('Title', f.title),
+      el('div', { class: 'form-row' }, [field('Project', f.project), field('Trade', f.trade)]),
+      el('div', { class: 'form-row' }, [field('Status', f.status), field('Priority', f.priority)]),
+      el('div', { class: 'form-row' }, [field('Location', f.location), field('Assigned to', f.assignedTo)]),
+      field('Linked task', f.task),
+      attach.wrap,
+    ]),
+    el('div', { class: 'modal-foot' }, [
+      (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this punch item?')) { store.deletePunch(pid); close(); renderActiveView(); } } }, 'Delete') : el('span'),
+      el('div', { class: 'foot-right' }, [el('button', { class: 'btn ghost', onclick: close }, RW ? 'Cancel' : 'Close'), RW ? el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create' : 'Save') : null]),
+    ]),
+  ]);
+  overlay.appendChild(modal); document.body.appendChild(overlay);
+  if (!RW) modal.querySelectorAll('.modal-body input, .modal-body select, .modal-body textarea, .attach-rows button, .form-field > button').forEach((n) => { n.disabled = true; });
+  setTimeout(() => { if (RW) f.title.focus(); }, 30);
+
+  async function save() {
+    const data = { projectId: f.project.value, title: f.title.value.trim() || 'Punch item', location: f.location.value.trim(), trade: f.trade.value, status: f.status.value, priority: f.priority.value, assignedTo: f.assignedTo.value.trim(), taskId: f.task.value || null, attachments: attach.get() };
+    if (isNew) await store.createPunch(data); else store.updatePunch(pid, data);
+    close(); renderActiveView();
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
 
 // --- Change-order editor ----------------------------------------------------
 function openCoEditor(coId, projectId) {
@@ -698,6 +782,7 @@ function openReportEditor(repId) {
   f.workPerformed = el('textarea', { class: 'input', rows: '2', placeholder: 'Work performed' }, r.workPerformed || '');
   f.deliveries = el('textarea', { class: 'input', rows: '2', placeholder: 'Deliveries' }, r.deliveries || '');
   f.delays = el('textarea', { class: 'input', rows: '2', placeholder: 'Delays / issues' }, r.delays || '');
+  const attach = attachmentsEditor(r.attachments);
 
   const modal = el('div', { class: 'modal' }, [
     el('div', { class: 'modal-head' }, [el('h2', {}, isNew ? 'New Daily Report' : 'Daily Report · ' + Dates.fmt(r.date)), !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null, el('button', { class: 'modal-x', onclick: close }, '✕')]),
@@ -707,6 +792,7 @@ function openReportEditor(repId) {
       field('Work performed', f.workPerformed),
       field('Deliveries', f.deliveries),
       field('Delays / issues', f.delays),
+      attach.wrap,
     ]),
     el('div', { class: 'modal-foot' }, [
       (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this report?')) { store.deleteReport(repId); close(); renderActiveView(); } } }, 'Delete') : el('span'),
@@ -718,7 +804,7 @@ function openReportEditor(repId) {
   setTimeout(() => { if (RW) f.workPerformed.focus(); }, 30);
 
   async function save() {
-    const data = { projectId: f.project.value, date: f.date.value, weather: f.weather.value, tempLow: f.tempLow.value, tempHigh: f.tempHigh.value, manpower: +f.manpower.value || 0, workPerformed: f.workPerformed.value, deliveries: f.deliveries.value, delays: f.delays.value };
+    const data = { projectId: f.project.value, date: f.date.value, weather: f.weather.value, tempLow: f.tempLow.value, tempHigh: f.tempHigh.value, manpower: +f.manpower.value || 0, workPerformed: f.workPerformed.value, deliveries: f.deliveries.value, delays: f.delays.value, attachments: attach.get() };
     if (isNew) await store.createReport(data); else store.updateReport(repId, data);
     close(); renderActiveView();
   }

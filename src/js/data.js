@@ -17,6 +17,7 @@ import { buildApplication, appsForProject } from './billing.js';
 import { makeDoc } from './docs.js';
 import { makeChangeOrder } from './changeorders.js';
 import { makeReport } from './fieldreports.js';
+import { makePunchItem } from './punch.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -548,6 +549,43 @@ class Store {
     if (this.mode === 'remote') {
       this._setSyncing(true);
       api('DELETE', '/reports/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- punch list / closeout ----
+  get punch() { return this.state.punch || []; }
+
+  async createPunch(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.punch)) this.state.punch = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/punch', partial); this.rev = revOf(etag) ?? this.rev; this.state.punch.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const p = makePunchItem(this.state.punch, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.punch.push(p); this._emit(); return p;
+  }
+
+  updatePunch(id, patch) {
+    const p = this.punch.find((x) => x.id === id);
+    if (!p || !this._guardProject(p.projectId)) return;
+    Object.assign(p, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/punch/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) p.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deletePunch(id) {
+    const p = this.punch.find((x) => x.id === id);
+    if (p && !this._guardProject(p.projectId)) return;
+    this.state.punch = this.punch.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/punch/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
     }
   }
 

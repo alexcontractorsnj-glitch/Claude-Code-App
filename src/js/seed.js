@@ -182,14 +182,21 @@ export function seedState() {
     { id: 'co3', projectId: 'p2', number: 'CO-001', title: 'Dock leveler upgrade credit', description: 'Value-engineered leveler model — credit to owner.', amount: -24000, days: 0, status: 'approved', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -14), approvedBy: 'System Admin', approvedAt: Dates.addDays(t0i, -9), rev: 2 },
   ];
   const reports = [
-    { id: 'fr1', projectId: 'p1', date: Dates.addDays(t0i, -1), weather: 'Clear', tempLow: 52, tempHigh: 74, manpower: 18, workPerformed: 'Foundation pour grid A–C; stripped forms at grid D.', deliveries: 'Rebar (2 loads), formwork lumber.', delays: '', notes: 'Inspector on site AM; passed footing inspection.', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -1), rev: 1 },
-    { id: 'fr2', projectId: 'p1', date: Dates.today(), weather: 'Rain', tempLow: 48, tempHigh: 60, manpower: 9, workPerformed: 'Limited work — cure & protect fresh concrete.', deliveries: '', delays: 'Rain delay PM; pump truck rescheduled.', notes: '', createdBy: 'A. Whitfield', createdAt: Dates.today(), rev: 1 },
-    { id: 'fr3', projectId: 'p2', date: Dates.today(), weather: 'Windy', tempLow: 41, tempHigh: 58, manpower: 22, workPerformed: 'Tilt-up panel casting beds 4–7; embeds set.', deliveries: 'Concrete (6 trucks), embed plates.', delays: '', notes: 'High wind watch — crane ops monitored.', createdBy: 'P. Sandoval', createdAt: Dates.today(), rev: 1 },
+    { id: 'fr1', projectId: 'p1', date: Dates.addDays(t0i, -1), weather: 'Clear', tempLow: 52, tempHigh: 74, manpower: 18, workPerformed: 'Foundation pour grid A–C; stripped forms at grid D.', deliveries: 'Rebar (2 loads), formwork lumber.', delays: '', notes: 'Inspector on site AM; passed footing inspection.', attachments: [{ name: 'Pour progress', url: 'https://example.com/photos/pour-ac.jpg', caption: 'Grid A–C pour midday', addedBy: 'A. Whitfield', addedAt: Dates.addDays(t0i, -1) }], createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -1), rev: 1 },
+    { id: 'fr2', projectId: 'p1', date: Dates.today(), weather: 'Rain', tempLow: 48, tempHigh: 60, manpower: 9, workPerformed: 'Limited work — cure & protect fresh concrete.', deliveries: '', delays: 'Rain delay PM; pump truck rescheduled.', notes: '', attachments: [], createdBy: 'A. Whitfield', createdAt: Dates.today(), rev: 1 },
+    { id: 'fr3', projectId: 'p2', date: Dates.today(), weather: 'Windy', tempLow: 41, tempHigh: 58, manpower: 22, workPerformed: 'Tilt-up panel casting beds 4–7; embeds set.', deliveries: 'Concrete (6 trucks), embed plates.', delays: '', notes: 'High wind watch — crane ops monitored.', attachments: [], createdBy: 'P. Sandoval', createdAt: Dates.today(), rev: 1 },
+  ];
+
+  // --- Seed punch-list items -----------------------------------------------
+  const punch = [
+    { id: 'pi1', projectId: 'p1', taskId: 't4', number: 'P-001', title: 'Honeycombing at foundation wall NE corner', location: 'Grid A-1, footing', trade: 'foundation', status: 'open', priority: 'high', assignedTo: 'Ironclad Concrete', attachments: [{ name: 'NE corner photo', url: 'https://example.com/photos/ne-corner.jpg', caption: 'Voids visible at cold joint', addedBy: 'A. Whitfield', addedAt: Dates.addDays(t0i, -2) }], createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -2), updatedBy: null, updatedAt: null, rev: 1 },
+    { id: 'pi2', projectId: 'p1', taskId: null, number: 'P-002', title: 'Touch-up paint at stair 2 handrail', location: 'Stair 2, L1', trade: 'finishes', status: 'ready', priority: 'low', assignedTo: 'Finishline Interiors', attachments: [], createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -1), updatedBy: null, updatedAt: null, rev: 1 },
+    { id: 'pi3', projectId: 'p3', taskId: 't24', number: 'P-001', title: 'Ceiling tile alignment in lobby', location: 'Lobby grid', trade: 'finishes', status: 'accepted', priority: 'normal', assignedTo: 'Finishline Interiors', attachments: [], createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -5), updatedBy: 'P. Sandoval', updatedAt: Dates.addDays(t0i, -1), rev: 2 },
   ];
 
   // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
   // is the full history. They share the same object reference for the active one.
-  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, version: SCHEMA_VERSION, rev: 1 };
+  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, punch, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // Next baseline id for a state (b1, b2, …).
@@ -246,6 +253,8 @@ export function normalizeState(state) {
   if (!Array.isArray(state.docs)) state.docs = [];
   if (!Array.isArray(state.changeOrders)) state.changeOrders = [];
   if (!Array.isArray(state.reports)) state.reports = [];
+  if (!Array.isArray(state.punch)) state.punch = [];
+  state.reports.forEach((r) => { if (!Array.isArray(r.attachments)) r.attachments = []; });
   if (state.baseline === undefined) state.baseline = null;
   // Migrate single-baseline states to the baselines[] history model.
   if (!Array.isArray(state.baselines)) {

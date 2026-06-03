@@ -10,14 +10,22 @@
 import { Dates } from './seed.js';
 import { taskVariance } from './variance.js';
 import { overdueDocs, DOC_KINDS } from './docs.js';
+import { isOpenPunch } from './punch.js';
 
 const RANK = { high: 0, medium: 1, low: 2 };
 
-export function computeAlerts(tasks, baseline, docs) {
+export function computeAlerts(tasks, baseline, docs, punch) {
   const today = Dates.today();
   const out = [];
   const push = (severity, type, t, message) =>
     out.push({ severity, type, taskId: t.id, projectId: t.projectId, title: t.name, message });
+
+  // High-priority open punch items (block closeout).
+  (punch || []).forEach((p) => {
+    if (isOpenPunch(p) && p.priority === 'high') {
+      out.push({ severity: 'medium', type: 'punch-high', punchId: p.id, projectId: p.projectId, title: `${p.number} ${p.title}`, message: `High-priority punch item open${p.location ? ' · ' + p.location : ''}` });
+    }
+  });
 
   // Overdue open submittals / RFIs (link to their task when set).
   overdueDocs(docs || []).forEach((d) => {

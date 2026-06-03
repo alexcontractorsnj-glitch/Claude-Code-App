@@ -17,6 +17,7 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **＄ Billing** | Schedule of Values & progress billing — AIA G702/G703-style payment applications driven by each task's cost + % complete, with retainage, "from previous / this period", current payment due, application history, and CSV export. |
 | **✉ Documents** | Submittal & RFI tracking — per-project logs with status workflows, ball-in-court / assignee, due dates, and a link to the related task. Overdue open items feed the alert center. |
 | **☰ Field** | Daily field reports — weather, temperature, manpower, work performed, deliveries and delays, newest first. The site's daily log. |
+| **✔ Punch** | Punch list & closeout — deficiency items with status (open → ready → accepted/rejected), priority, location, trade, assignee, and a closeout-readiness roll-up. |
 
 ## Run it
 
@@ -63,6 +64,7 @@ views changes.
 | `POST/PATCH/DELETE /api/docs/:id?` | submittal & RFI CRUD |
 | `POST/PATCH/DELETE /api/changeorders/:id?` | change-order CRUD (approved → billing) |
 | `POST/PATCH/DELETE /api/reports/:id?` | daily field report CRUD |
+| `POST/PATCH/DELETE /api/punch/:id?` | punch-list item CRUD |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -206,6 +208,23 @@ The **Field** view is the site's daily log: weather + temperature, manpower,
 work performed, deliveries, and delays — newest first, one card per day, create/
 edit per project. `POST/PATCH/DELETE /api/reports`, project-scoped + audited.
 
+### Punch list & closeout
+
+The **Punch** view tracks deficiency items (open → ready-for-review →
+accepted/rejected) with priority, location, trade, and assignee, plus a
+**closeout-readiness** roll-up (% accepted, open/ready/rejected counts, blocking
+items). High-priority open items feed the alert center.
+`POST/PATCH/DELETE /api/punch`, project-scoped + audited.
+
+### Attachments
+
+Punch items and daily reports carry **attachments by reference** — name + URL +
+caption (e.g. a link to a site photo or drawing), added in their editors.
+
+> Honest scope: this stores attachment *links*, not uploaded binaries. Real photo
+> upload needs a blob/object store (S3 or similar) the offline demo doesn't have;
+> the model + UI are built so wiring an uploader later is a drop-in.
+
 ### Submittals & RFIs
 
 The **Documents** view tracks **submittals** (draft → submitted → under-review →
@@ -304,6 +323,7 @@ src/
     billing.js          # pure schedule-of-values / G702-G703 payment-application math
     changeorders.js     # pure change-order model + net-approved (feeds billing)
     fieldreports.js     # pure daily-field-report model
+    punch.js            # pure punch-list/closeout model + attachment sanitizer
     docs.js             # pure submittal/RFI model: kinds, statuses, numbering, overdue
     alerts.js           # pure derived alerts (overdue / blocked / slip / overdue docs)
     data.js             # browser store: identity, mutations + attribution,
@@ -319,6 +339,7 @@ src/
       billing.js        # G702 summary + G703 sheet + change-order log + CSV
       documents.js      # submittal & RFI columns with status badges + due dates
       field.js          # daily field report cards
+      punch.js          # punch list + closeout-readiness deck
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -333,9 +354,9 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Email/webhook delivery for the alert center
+- Real file/photo upload (blob store) behind the existing attachment model
 - Mobile-friendly field view for crews
-- Photo attachments on daily reports & documents
-- Punch-list / closeout tracking
+- Database-backed persistence (replace the JSON files)
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
@@ -349,4 +370,5 @@ zero total float are flagged), not hard-coded.
 ✅ baseline history (multiple baselines, compare across revisions) ·
 ✅ filterable + CSV-exportable audit log + in-app alert center ·
 ✅ schedule of values / progress billing (G702/G703) + submittal & RFI tracking ·
-✅ change-order management (approved COs flow into billing) + daily field reports.
+✅ change-order management (approved COs flow into billing) + daily field reports ·
+✅ punch list / closeout tracking + attachments (by reference).

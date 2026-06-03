@@ -3,6 +3,7 @@
 //  manpower, work performed, deliveries, delays. Linked to a project.
 // ============================================================================
 import { Dates } from './seed.js';
+import { cleanAttachments } from './punch.js';
 
 export const WEATHER = ['Clear', 'Partly Cloudy', 'Cloudy', 'Rain', 'Storm', 'Snow', 'Windy', 'Fog'];
 
@@ -20,6 +21,7 @@ export function makeReport(existing, partial) {
     deliveries: partial.deliveries || '',
     delays: partial.delays || '',
     notes: partial.notes || '',
+    attachments: cleanAttachments(partial.attachments, partial.createdBy),
     createdBy: partial.createdBy || null,
     createdAt: partial.createdAt || new Date().toISOString(),
     rev: 1,
