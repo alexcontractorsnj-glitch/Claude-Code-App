@@ -70,6 +70,7 @@ class Store {
     this._poll = null;
     this.authState = 'unknown';   // unknown | local | required | authed
     this.role = null;             // server role when authenticated
+    this.scope = [];              // project scope ([] = all / unrestricted)
     this.user = this._loadUser(); // display name (local identity, or session user)
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
@@ -102,6 +103,7 @@ class Store {
     if (!u) return;
     this.user = u.name || u.username;
     this.role = u.role;
+    this.scope = Array.isArray(u.projects) ? u.projects : [];
   }
 
   // ---- auth actions ----
@@ -139,11 +141,28 @@ class Store {
     return false;
   }
 
-  // ---- admin: user management (thin API wrappers) ----
+  // Unrestricted = admin or a pm with no project list.
+  isUnrestricted() { return this.mode === 'local' || this.role === 'admin' || (this.can('write') && this.scope.length === 0); }
+  // Per-project write permission (project scoping).
+  canEditProject(projectId) {
+    if (this.mode === 'local') return true;
+    if (!this.can('write')) return false;
+    return this.isUnrestricted() || this.scope.includes(projectId);
+  }
+  // Baseline is schedule-wide → only unrestricted writers.
+  canBaseline() { return this.can('write') && this.isUnrestricted(); }
+  // Projects this user may create tasks in (for the editor's project picker).
+  editableProjects() {
+    return this.isUnrestricted() ? this.state.projects : this.state.projects.filter((p) => this.scope.includes(p.id));
+  }
+
+  // ---- admin: user management + audit (thin API wrappers) ----
   listUsers() { return api('GET', '/users').then((r) => r.data); }
   createUser(u) { return api('POST', '/users', u).then((r) => r.data); }
-  setUserRole(username, role) { return api('PATCH', '/users/' + username, { role }).then((r) => r.data); }
+  updateUser(username, patch) { return api('PATCH', '/users/' + username, patch).then((r) => r.data); }
+  setUserRole(username, role) { return this.updateUser(username, { role }); }
   deleteUser(username) { return api('DELETE', '/users/' + username).then(() => true); }
+  listAudit() { return api('GET', '/audit').then((r) => r.data); }
 
   // ---- team identity (attribution, not authentication) ----
   _loadUser() {
@@ -269,9 +288,9 @@ class Store {
   // carries If-Match with the task's known rev — a 409 means someone else
   // changed it first → we re-hydrate from the server and tell the user.
   updateTask(id, patch) {
-    if (!this._guardWrite()) return;
     const t = this.task(id);
     if (!t) return;
+    if (!this._guardProject(t.projectId)) return;
     const baseRev = t.rev || 1;
     const stamped = { ...patch, ...this._stamp() };
     applyTaskPatch(t, stamped);
@@ -298,7 +317,7 @@ class Store {
   }
 
   addTask(partial) {
-    if (!this._guardWrite()) return null;
+    if (!this._guardProject(partial.projectId)) return null;
     const full = makeTask(this.state.tasks, { ...partial, ...this._stamp() });
     this.state.tasks.push(full);
     this._emit();
@@ -313,7 +332,7 @@ class Store {
 
   // ---- baseline (planned vs. actual) ----
   saveBaseline() {
-    if (!this._guardWrite()) return;
+    if (!this.canBaseline()) { this._notify('Saving a baseline requires all-project access.', 'warn'); return; }
     const snap = {
       label: 'Baseline', savedAt: Dates.today(), savedBy: this.user,
       tasks: Object.fromEntries(this.state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
@@ -330,7 +349,7 @@ class Store {
   }
 
   clearBaseline() {
-    if (!this._guardWrite()) return;
+    if (!this.canBaseline()) { this._notify('Clearing a baseline requires all-project access.', 'warn'); return; }
     this.state.baseline = null;
     this._emit();
     if (this.mode === 'remote') {
@@ -342,7 +361,8 @@ class Store {
   }
 
   deleteTask(id) {
-    if (!this._guardWrite()) return;
+    const target = this.task(id);
+    if (target && !this._guardProject(target.projectId)) return;
     this.state.tasks = this.state.tasks.filter((t) => t.id !== id);
     this.state.tasks.forEach((t) => {
       t.dependencies = t.dependencies.filter((d) => d !== id);
@@ -356,10 +376,16 @@ class Store {
     }
   }
 
-  // Client-side permission gate (defence in depth; the server also enforces).
+  // Client-side permission gates (defence in depth; the server also enforces).
   _guardWrite() {
     if (this.can('write')) return true;
     this._notify('You have read-only access — that change was blocked.', 'warn');
+    return false;
+  }
+  _guardProject(projectId) {
+    if (this.canEditProject(projectId)) return true;
+    const p = this.project(projectId);
+    this._notify(`You don’t have access to ${p ? p.name : 'that project'} — change blocked.`, 'warn');
     return false;
   }
 

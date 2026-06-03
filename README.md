@@ -51,10 +51,12 @@ views changes.
 | `POST /api/baseline` | snapshot the current schedule as the baseline |
 | `DELETE /api/baseline` | clear the baseline |
 | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
-| `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management |
+| `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
+| `GET /api/audit` | recent activity log (write role) |
 
-All `/api` routes except `auth/*` require a valid session; writes require `pm`+
-and `reset`/`users` require `admin`.
+All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
+task writes are checked against the caller's **project scope**, baselines need
+unrestricted access, and `reset`/`users` require `admin`.
 
 The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
 **`src/js/seed.js`** and is imported by *both* the browser and the server, so the
@@ -100,8 +102,9 @@ runs in single-user local mode with no login.)
 
 | Username | Password | Role | Can |
 |----------|----------|------|-----|
-| `admin` | `admin123` | admin | everything incl. reset + user management |
-| `awhitfield` | `build123` | pm | read + write (edit tasks, baselines) |
+| `admin` | `admin123` | admin | everything incl. reset, baselines + user management |
+| `awhitfield` | `build123` | pm · **Riverside only** | edit tasks in their assigned project(s) |
+| `psandoval` | `north123` | pm · **Northgate + Civic** | edit tasks in their assigned project(s) |
 | `viewer` | `view123` | viewer | read-only |
 
 How it works:
@@ -129,6 +132,31 @@ How it works:
 > demo runs over plain HTTP on localhost — behind HTTPS you'd add `Secure`.
 > Sessions are in-memory (a restart logs everyone out); a real deployment would
 > back them with a store like Redis.
+
+### Project-scoped permissions
+
+A PM can be **scoped to specific projects**. A pm with an empty project list is
+unrestricted (all projects); a non-empty list limits their writes to those
+projects only. Everyone can still *read* the whole portfolio.
+
+- The server checks the task's `projectId` against the caller's scope on every
+  task write (`403` outside scope), and **baselines require unrestricted access**
+  (they're schedule-wide).
+- The UI mirrors it per task: a scoped PM can drag / edit / create only in their
+  projects; the editor's project picker is limited accordingly; out-of-scope
+  tasks open read-only.
+- Admins assign scope from the **Users** panel — click the project chips on a PM
+  row (no chips selected = all projects). Changing scope revokes the user's
+  sessions so it takes effect on next login.
+
+### Activity log (audit)
+
+Every successful change is recorded to an append-only **audit log**
+(`data/audit.json`, capped to the latest 500) attributed to the session user:
+task create/update/delete, baseline save/clear, schedule reset, and user
+management. Open it from the **Activity** button in the header (pm+); it shows
+who did what, to which task/project, and when. `GET /api/audit` returns the most
+recent 200 entries (write role required).
 
 ### Earned-Value Management (CPI/SPI)
 
@@ -168,7 +196,7 @@ today + EAC forecast) and a per-project earned-value table with a health verdict
 ```
 index.html              # shell, loads fonts + the ES-module entry
 server.mjs              # zero-dep static host + REST API + auth gate + persistence
-auth.js                 # server-only: scrypt hashing, sessions, RBAC, throttling
+auth.js                 # server-only: scrypt hashing, sessions, RBAC, project scope, throttling
 src/
   css/styles.css        # dark "control-room" theme
   js/
@@ -199,14 +227,14 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Resource leveling / crew over-allocation warnings
-- Project-scoped permissions (a PM assigned to specific projects only)
-- Audit log of changes (who/what/when), browsable in-app
 - Baseline history (keep multiple baselines, compare across revisions)
+- Filterable / exportable audit log (CSV), per-task history timeline
+- Notifications (email/webhook) on milestone slips or blocked tasks
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·
 ✅ baseline vs. actual variance tracking ·
-✅ authentication (scrypt + sessions) & role-based permissions with edit
-attribution & admin user management.
+✅ authentication (scrypt + sessions) & role-based permissions ·
+✅ project-scoped permissions + in-app audit log.

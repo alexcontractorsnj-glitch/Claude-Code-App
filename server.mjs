@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { seedState, makeTask, applyTaskPatch, normalizeState } from './src/js/seed.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
+  canEditProject, isUnrestricted,
   createSession, getSession, destroySession, destroyUserSessions,
   isLockedOut, recordFailure, clearFailures,
   parseCookies, sessionCookie, clearCookie, COOKIE,
@@ -31,6 +32,8 @@ const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'schedule.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
+const AUDIT_FILE = path.join(DATA_DIR, 'audit.json');
+const AUDIT_CAP = 500;                          // keep the most recent N entries
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -41,7 +44,8 @@ const MIME = {
 
 // --- Persistence ------------------------------------------------------------
 let state;
-let users;                                    // [{ username, name, role, passwordHash }]
+let users;                                    // [{ username, name, role, projects, passwordHash }]
+let audit = [];                               // append-only activity log (capped)
 let writeChain = Promise.resolve();           // serialize writes
 
 async function loadState() {
@@ -58,12 +62,40 @@ async function loadUsers() {
   if (existsSync(AUTH_FILE)) {
     try {
       const u = JSON.parse(await readFile(AUTH_FILE, 'utf8'));
-      if (Array.isArray(u) && u.length) return u;
+      if (Array.isArray(u) && u.length) {
+        u.forEach((x) => { if (!Array.isArray(x.projects)) x.projects = []; });  // backfill
+        return u;
+      }
     } catch { /* corrupt → reseed */ }
   }
   const fresh = await seedUsers();
   await persist(AUTH_FILE, fresh);
   return fresh;
+}
+
+async function loadAudit() {
+  if (existsSync(AUDIT_FILE)) {
+    try {
+      const a = JSON.parse(await readFile(AUDIT_FILE, 'utf8'));
+      if (Array.isArray(a)) return a;
+    } catch { /* corrupt → start fresh */ }
+  }
+  return [];
+}
+
+// Append an immutable activity entry, attributed to the acting session user.
+let auditSeq = 0;
+function logAudit(actor, action, entry = {}) {
+  audit.push({
+    id: 'a' + Date.now().toString(36) + (auditSeq++).toString(36),
+    ts: new Date().toISOString(),
+    user: (actor && actor.name) || 'system',
+    role: (actor && actor.role) || null,
+    action,                                   // e.g. task.update, baseline.save, user.create
+    ...entry,                                 // { targetId, targetName, detail }
+  });
+  if (audit.length > AUDIT_CAP) audit = audit.slice(-AUDIT_CAP);
+  persist(AUDIT_FILE, audit);
 }
 
 // Global revision: bumped on every write so clients can detect others' edits
@@ -140,26 +172,33 @@ async function handleAuth(req, res, action) {
 }
 
 // --- Admin: user management ------------------------------------------------
-async function handleUsers(req, res, target) {
+const cleanProjects = (p) => (Array.isArray(p) ? p.filter((x) => typeof x === 'string') : []);
+
+async function handleUsers(req, res, target, actor) {
   const method = req.method;
   if (method === 'GET' && !target) return send(res, 200, users.map(publicUser));
   if (method === 'POST' && !target) {
-    const { username, password, name, role } = await readBody(req);
+    const { username, password, name, role, projects } = await readBody(req);
     if (!username || !password || !isRole(role)) return send(res, 400, { error: 'username, password and a valid role are required' });
     if (users.some((u) => u.username === username)) return send(res, 409, { error: 'username already exists' });
-    const user = { username, name: name || username, role, passwordHash: await hashPassword(password) };
+    const user = { username, name: name || username, role, projects: cleanProjects(projects), passwordHash: await hashPassword(password) };
     users.push(user);
     await persistUsers();
+    logAudit(actor, 'user.create', { targetId: username, targetName: user.name, detail: `role ${role}` });
     return send(res, 201, publicUser(user));
   }
-  if (method === 'PATCH' && target) {          // change role
+  if (method === 'PATCH' && target) {          // change role and/or project scope
     const u = users.find((x) => x.username === target);
     if (!u) return send(res, 404, { error: 'user not found' });
-    const { role } = await readBody(req);
-    if (!isRole(role)) return send(res, 400, { error: 'valid role required' });
-    u.role = role;
-    destroyUserSessions(u.username);           // force re-login so the new role takes effect
+    const body = await readBody(req);
+    if (body.role !== undefined) {
+      if (!isRole(body.role)) return send(res, 400, { error: 'valid role required' });
+      u.role = body.role;
+    }
+    if (body.projects !== undefined) u.projects = cleanProjects(body.projects);
+    destroyUserSessions(u.username);           // force re-login so the change takes effect
     await persistUsers();
+    logAudit(actor, 'user.update', { targetId: u.username, targetName: u.name, detail: `role ${u.role}, ${u.projects.length || 'all'} projects` });
     return send(res, 200, publicUser(u));
   }
   if (method === 'DELETE' && target) {
@@ -169,6 +208,7 @@ async function handleUsers(req, res, target) {
     users = users.filter((u) => u.username !== target);
     destroyUserSessions(target);
     await persistUsers();
+    logAudit(actor, 'user.delete', { targetId: target });
     res.writeHead(204); return res.end();
   }
   return send(res, 404, { error: 'unknown users endpoint' });
@@ -189,15 +229,30 @@ async function handleApi(req, res, urlPath) {
     const actor = actorOf(req);
     if (!actor) return send(res, 401, { error: 'authentication required' });
 
-    // Authorization: reads need a session; writes need pm+, admin ops need admin.
+    // Authorization: reads need a session; writes need pm+; admin ops need admin.
     const isWrite = method !== 'GET' && method !== 'HEAD';
     const adminOnly = resource === 'reset' || resource === 'users';
     if (adminOnly && !can(actor.role, 'admin')) return send(res, 403, { error: 'admin privilege required' });
     if (isWrite && !adminOnly && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required (read-only role)' });
     }
+    // Baseline is schedule-wide → only an unrestricted writer (admin / global pm).
+    if (resource === 'baseline' && isWrite && !isUnrestricted(actor)) {
+      return send(res, 403, { error: 'baseline requires unrestricted (all-project) access' });
+    }
+    // Activity log is visible to writers and admins.
+    if (resource === 'audit' && !can(actor.role, 'write')) {
+      return send(res, 403, { error: 'write privilege required' });
+    }
 
-    if (resource === 'users') return await handleUsers(req, res, id);
+    if (resource === 'users') {
+      const r = await handleUsers(req, res, id, actor);
+      return r;
+    }
+
+    if (resource === 'audit' && method === 'GET') {
+      return send(res, 200, audit.slice(-200).reverse());   // most-recent first
+    }
 
     if (resource === 'state' && method === 'GET') {
       const inm = req.headers['if-none-match'];
@@ -212,6 +267,7 @@ async function handleApi(req, res, urlPath) {
       state = seedState();
       state.rev = rev;
       await persistState();
+      logAudit(actor, 'schedule.reset', { detail: 'reseeded to sample data' });
       return send(res, 200, state, { ETag: etag() });
     }
 
@@ -224,12 +280,14 @@ async function handleApi(req, res, urlPath) {
         };
         bump();
         await persistState();
+        logAudit(actor, 'baseline.save', { detail: `${state.tasks.length} tasks captured` });
         return send(res, 200, state.baseline, { ETag: etag() });
       }
       if (method === 'DELETE') {
         state.baseline = null;
         bump();
         await persistState();
+        logAudit(actor, 'baseline.clear');
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
@@ -238,32 +296,50 @@ async function handleApi(req, res, urlPath) {
       if (method === 'POST') {
         const body = await readBody(req);
         const task = body.id ? body : makeTask(state.tasks, body);
+        if (!canEditProject(actor, task.projectId)) {
+          return send(res, 403, { error: 'you do not have access to that project' });
+        }
         if (task.rev == null) task.rev = 1;
         stamp(task, actor);                    // attribution from the session — unspoofable
         if (!state.tasks.some((t) => t.id === task.id)) state.tasks.push(task);
         bump();
         await persistState();
+        logAudit(actor, 'task.create', { targetId: task.id, targetName: task.name, projectId: task.projectId });
         return send(res, 201, task, { ETag: etag() });
       }
       if (method === 'PATCH' && id) {
         const t = state.tasks.find((x) => x.id === id);
         if (!t) return send(res, 404, { error: 'task not found' });
+        if (!canEditProject(actor, t.projectId)) {
+          return send(res, 403, { error: 'you do not have access to that project' });
+        }
         const ifMatch = req.headers['if-match'];
         if (ifMatch && ifMatch.replace(/"/g, '') !== String(t.rev || 1)) {
           return send(res, 409, { error: 'revision conflict', current: t }, { ETag: etag() });
         }
-        applyTaskPatch(t, await readBody(req));
+        const patch = await readBody(req);
+        applyTaskPatch(t, patch);
         stamp(t, actor);
         t.rev = (t.rev || 1) + 1;
         bump();
         await persistState();
+        logAudit(actor, 'task.update', {
+          targetId: t.id, targetName: t.name, projectId: t.projectId,
+          detail: 'changed ' + Object.keys(patch).filter((k) => !['lastEditedBy', 'lastEditedAt'].includes(k)).join(', '),
+        });
         return send(res, 200, t, { ETag: etag() });
       }
       if (method === 'DELETE' && id) {
-        state.tasks = state.tasks.filter((t) => t.id !== id);
-        state.tasks.forEach((t) => { t.dependencies = t.dependencies.filter((d) => d !== id); });
+        const t = state.tasks.find((x) => x.id === id);
+        if (!t) return send(res, 404, { error: 'task not found' });
+        if (!canEditProject(actor, t.projectId)) {
+          return send(res, 403, { error: 'you do not have access to that project' });
+        }
+        state.tasks = state.tasks.filter((x) => x.id !== id);
+        state.tasks.forEach((x) => { x.dependencies = x.dependencies.filter((d) => d !== id); });
         bump();
         await persistState();
+        logAudit(actor, 'task.delete', { targetId: id, targetName: t.name, projectId: t.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
@@ -298,9 +374,11 @@ const server = http.createServer(async (req, res) => {
 
 state = await loadState();
 users = await loadUsers();
+audit = await loadAudit();
 server.listen(PORT, () => {
   console.log(`\n  BuildFlow ERP Schedule  →  http://localhost:${PORT}`);
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);
-  console.log(`  Auth                    →  sign in required · demo: admin/admin123, awhitfield/build123, viewer/view123`);
-  console.log(`  Persisting to           →  ${path.relative(ROOT, DATA_FILE)} + auth.json\n`);
+  console.log(`  Auth                    →  sign in required · demo: admin/admin123 (admin),`);
+  console.log(`                              awhitfield/build123 (PM·Riverside), psandoval/north123 (PM·Northgate+Civic), viewer/view123`);
+  console.log(`  Persisting to           →  ${path.relative(ROOT, DATA_FILE)} + auth.json + audit.json\n`);
 });

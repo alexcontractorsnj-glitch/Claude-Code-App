@@ -39,12 +39,15 @@ export function verifyPassword(pw, stored) {
 }
 
 // --- Seed demo users (passwords documented in README + login screen) -------
+// `projects: []` means unrestricted (all projects). A non-empty list scopes a
+// pm to only those project ids. Admins are always unrestricted.
 export async function seedUsers() {
-  const mk = async (username, name, role, pw) =>
-    ({ username, name, role, passwordHash: await hashPassword(pw) });
+  const mk = async (username, name, role, pw, projects = []) =>
+    ({ username, name, role, projects, passwordHash: await hashPassword(pw) });
   return [
     await mk('admin', 'System Admin', 'admin', 'admin123'),
-    await mk('awhitfield', 'A. Whitfield', 'pm', 'build123'),
+    await mk('awhitfield', 'A. Whitfield', 'pm', 'build123', ['p1']),     // Riverside only
+    await mk('psandoval', 'P. Sandoval', 'pm', 'north123', ['p2', 'p3']), // Northgate + Civic
     await mk('viewer', 'Client Viewer', 'viewer', 'view123'),
   ];
 }
@@ -56,6 +59,7 @@ export function createSession(user) {
   const token = crypto.randomBytes(32).toString('hex');
   sessions.set(token, {
     username: user.username, name: user.name, role: user.role,
+    projects: Array.isArray(user.projects) ? user.projects : [],
     expires: Date.now() + SESSION_TTL_MS,
   });
   return token;
@@ -101,6 +105,16 @@ export function can(role, action) {
 }
 export const isRole = (role) => Object.prototype.hasOwnProperty.call(RANK, role);
 
+// Project scoping: admins and pms with an empty project list are unrestricted;
+// otherwise a pm may only act on projects in their list.
+export function isUnrestricted(user) {
+  return !!user && (user.role === 'admin' || !Array.isArray(user.projects) || user.projects.length === 0);
+}
+export function canEditProject(user, projectId) {
+  if (!can(user && user.role, 'write')) return false;
+  return isUnrestricted(user) || user.projects.includes(projectId);
+}
+
 // --- Cookies ----------------------------------------------------------------
 export function parseCookies(req) {
   const out = {};
@@ -123,4 +137,7 @@ export function clearCookie() {
 }
 
 // Strip secrets before sending a user object to a client.
-export const publicUser = (u) => ({ username: u.username, name: u.name, role: u.role });
+export const publicUser = (u) => ({
+  username: u.username, name: u.name, role: u.role,
+  projects: Array.isArray(u.projects) ? u.projects : [],
+});

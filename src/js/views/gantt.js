@@ -183,7 +183,7 @@ export function renderGantt(mount, ctx) {
   function attachDrag(node, t, kind, posKey) {
     node.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      if (ctx.canWrite && !ctx.canWrite()) return;   // read-only role: no rescheduling
+      if (ctx.canEditProject && !ctx.canEditProject(t.projectId)) return;  // role/scope: no rescheduling
       if (kind === 'move' && e.target.classList.contains('bar-handle')) return; // let handle own it
       e.preventDefault();
       e.stopPropagation();

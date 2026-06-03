@@ -28,6 +28,7 @@ const ctx = {
   },
   gotoToday: () => { ctx.calMonth = Dates.iso(new Date()).slice(0, 7); renderActiveView(); },
   canWrite: () => store.can('write'),
+  canEditProject: (pid) => store.canEditProject(pid),
 };
 
 const VIEWS = {
@@ -178,6 +179,7 @@ function identityChip(root) {
         el('span', { class: 'role-badge role-' + store.role }, ROLE_LABEL[store.role] || store.role),
       ]),
     ]),
+    store.can('write') ? el('button', { class: 'btn ghost sm', title: 'Recent activity', onclick: () => openActivityPanel() }, 'Activity') : null,
     store.can('admin') ? el('button', { class: 'btn ghost sm', onclick: () => openUsersPanel() }, 'Users') : null,
     el('button', { class: 'btn ghost sm', title: 'Sign out', onclick: () => store.logout() }, 'Sign out'),
   ]);
@@ -187,7 +189,7 @@ function identityChip(root) {
 // write access; read-only roles just see the baseline tag.
 function baselineControls() {
   const b = store.baseline;
-  const rw = store.can('write');
+  const rw = store.canBaseline();
   if (!b) {
     return rw ? el('button', { class: 'btn ghost', title: 'Snapshot the current schedule as the plan to measure slip against',
       onclick: () => store.saveBaseline() }, '📌 Save Baseline') : null;
@@ -237,15 +239,22 @@ function metaPanel(t) {
 
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
-  const RW = store.can('write');           // read-only roles can view but not edit
   const isNew = taskId == null;
-  if (isNew && !RW) return;                // viewers can't create
+  const editable = store.editableProjects();       // projects this user may write
+  if (isNew && (!store.can('write') || !editable.length)) return;
+  const defaultProj = ctx.projectId !== 'all' && editable.some((p) => p.id === ctx.projectId)
+    ? ctx.projectId : (editable[0] && editable[0].id);
   const t = isNew ? {
-    projectId: ctx.projectId === 'all' ? store.projects[0].id : ctx.projectId,
+    projectId: defaultProj,
     name: '', trade: ctx.tradeFilter === 'all' ? 'sitework' : ctx.tradeFilter,
     crewId: null, start: Dates.today(), end: Dates.addDays(Dates.today(), 4),
     dependencies: [], progress: 0, status: 'not-started', milestone: false,
   } : { ...store.task(taskId) };
+  // Read-only unless the user may write to THIS task's project (scoping).
+  const RW = isNew ? store.can('write') : store.canEditProject(t.projectId);
+  // Project picker only offers projects the user can write (plus the current one).
+  const projOptions = isNew ? editable
+    : store.projects.filter((p) => p.id === t.projectId || store.canEditProject(p.id));
 
   const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
   const f = {};
@@ -253,7 +262,7 @@ function openEditor(taskId) {
   const field = (label, input) => el('div', { class: 'form-field' }, [el('label', {}, label), input]);
 
   f.name = el('input', { class: 'input', type: 'text', value: t.name, placeholder: 'e.g. Foundation Pour' });
-  f.project = el('select', { class: 'select' }, store.projects.map((p) => el('option', { value: p.id }, p.name))); f.project.value = t.projectId;
+  f.project = el('select', { class: 'select' }, projOptions.map((p) => el('option', { value: p.id }, p.name))); f.project.value = t.projectId;
   f.trade = el('select', { class: 'select' }, Object.entries(TRADES).map(([k, v]) => el('option', { value: k }, v.label))); f.trade.value = t.trade;
   f.crew = el('select', { class: 'select' }, [el('option', { value: '' }, '— Unassigned —'), ...store.crews.map((c) => el('option', { value: c.id }, `${c.name} (${c.lead})`))]); f.crew.value = t.crewId || '';
   f.start = el('input', { class: 'input', type: 'date', value: t.start });
@@ -333,6 +342,56 @@ function openEditor(taskId) {
   document.addEventListener('keydown', onKey);
 }
 
+// --- Activity / audit log panel ---------------------------------------------
+const ACTION_META = {
+  'task.create': { icon: '＋', label: 'created' },
+  'task.update': { icon: '✎', label: 'updated' },
+  'task.delete': { icon: '🗑', label: 'deleted' },
+  'baseline.save': { icon: '📌', label: 'saved a baseline' },
+  'baseline.clear': { icon: '✕', label: 'cleared the baseline' },
+  'schedule.reset': { icon: '↺', label: 'reset the schedule' },
+  'user.create': { icon: '👤', label: 'created user' },
+  'user.update': { icon: '🔑', label: 'updated user' },
+  'user.delete': { icon: '🗑', label: 'removed user' },
+};
+
+function openActivityPanel() {
+  if (!store.can('write')) return;
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const body = el('div', { class: 'activity-list' }, el('div', { class: 'login-err' }, ''));
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Activity Log'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, body),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  store.listAudit().then((entries) => {
+    clear(body);
+    if (!entries.length) { body.appendChild(el('div', { class: 'empty' }, 'No activity yet.')); return; }
+    entries.forEach((e) => {
+      const meta = ACTION_META[e.action] || { icon: '•', label: e.action };
+      const proj = e.projectId ? store.project(e.projectId) : null;
+      body.appendChild(el('div', { class: 'activity-row' }, [
+        el('span', { class: 'activity-icon' }, meta.icon),
+        el('div', { class: 'activity-main' }, [
+          el('div', { class: 'activity-text' }, [
+            el('b', {}, e.user || 'system'), ' ', meta.label,
+            e.targetName ? el('span', { class: 'activity-target' }, ' “' + e.targetName + '”') : null,
+            proj ? el('span', { class: 'activity-proj', style: { color: proj.color } }, ' · ' + proj.name) : null,
+          ]),
+          e.detail ? el('div', { class: 'activity-detail' }, e.detail) : null,
+        ]),
+        el('span', { class: 'activity-time', title: e.ts }, ago(e.ts) || ''),
+      ]));
+    });
+  }).catch(() => { clear(body); body.appendChild(el('div', { class: 'login-err' }, 'Could not load activity.')); });
+
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(ev) { if (ev.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
+
 // --- Admin: user management panel -------------------------------------------
 function openUsersPanel() {
   if (!store.can('admin')) return;
@@ -353,9 +412,30 @@ function openUsersPanel() {
         catch (er) { err.textContent = (er.data && er.data.error) || 'Update failed'; }
       } }, ROLES.map((r) => el('option', { value: r }, ROLE_LABEL[r])));
       roleSel.value = u.role;
+
+      // Project-scope chips (only meaningful for pm; admins are always all-projects)
+      const scope = u.role === 'pm'
+        ? el('div', { class: 'scope-chips' }, [
+            ...store.projects.map((p) => {
+              const on = (u.projects || []).includes(p.id);
+              return el('button', {
+                class: 'scope-chip' + (on ? ' on' : ''),
+                title: p.name, style: on ? { borderColor: p.color, color: p.color } : null,
+                onclick: async () => {
+                  const next = on ? u.projects.filter((x) => x !== p.id) : [...(u.projects || []), p.id];
+                  try { await store.updateUser(u.username, { projects: next }); await refresh(); }
+                  catch (er) { err.textContent = (er.data && er.data.error) || 'Update failed'; }
+                },
+              }, p.name.split(' ')[0]);
+            }),
+            el('span', { class: 'scope-hint' }, (u.projects || []).length ? '' : 'all projects'),
+          ])
+        : el('span', { class: 'scope-na' }, u.role === 'admin' ? 'all projects' : '—');
+
       listBody.appendChild(el('div', { class: 'user-row' }, [
         el('span', { class: 'identity-avatar' }, (u.name || u.username).split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase()),
         el('div', { class: 'user-id' }, [el('div', { class: 'user-name' }, u.name || u.username), el('div', { class: 'user-uname' }, '@' + u.username)]),
+        scope,
         roleSel,
         el('button', { class: 'btn ghost sm', onclick: async () => {
           if (!confirm(`Delete user “${u.username}”?`)) return;
@@ -438,7 +518,8 @@ function renderLogin(root) {
     el('div', { class: 'login-demo' }, [
       el('div', { class: 'login-demo-title' }, 'Demo accounts'),
       el('div', {}, 'admin / admin123 — full access'),
-      el('div', {}, 'awhitfield / build123 — project manager (edit)'),
+      el('div', {}, 'awhitfield / build123 — PM, Riverside only'),
+      el('div', {}, 'psandoval / north123 — PM, Northgate + Civic'),
       el('div', {}, 'viewer / view123 — read-only'),
     ]),
   ]);
