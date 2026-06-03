@@ -9,14 +9,26 @@
 // ============================================================================
 import { Dates } from './seed.js';
 import { taskVariance } from './variance.js';
+import { overdueDocs, DOC_KINDS } from './docs.js';
 
 const RANK = { high: 0, medium: 1, low: 2 };
 
-export function computeAlerts(tasks, baseline) {
+export function computeAlerts(tasks, baseline, docs) {
   const today = Dates.today();
   const out = [];
   const push = (severity, type, t, message) =>
     out.push({ severity, type, taskId: t.id, projectId: t.projectId, title: t.name, message });
+
+  // Overdue open submittals / RFIs (link to their task when set).
+  overdueDocs(docs || []).forEach((d) => {
+    out.push({
+      severity: d.kind === 'rfi' ? 'high' : 'medium',
+      type: d.kind === 'rfi' ? 'rfi-overdue' : 'submittal-overdue',
+      taskId: d.taskId, docId: d.id, projectId: d.projectId,
+      title: `${d.number} ${d.title}`,
+      message: `${DOC_KINDS[d.kind].label} overdue — was due ${Dates.fmt(d.due)} (${d.court || 'unassigned'})`,
+    });
+  });
 
   tasks.forEach((t) => {
     if (t.status === 'done') return;

@@ -10,6 +10,9 @@ import { renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderCost } from './views/cost.js';
 import { renderResources } from './views/resources.js';
+import { renderBilling } from './views/billing.js';
+import { renderDocuments } from './views/documents.js';
+import { DOC_KINDS } from './docs.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -32,7 +35,15 @@ const ctx = {
   gotoToday: () => { ctx.calMonth = Dates.iso(new Date()).slice(0, 7); renderActiveView(); },
   canWrite: () => store.can('write'),
   canEditProject: (pid) => store.canEditProject(pid),
+  setProject: (pid) => { ctx.projectId = pid; ctx.billingApp = null; renderHeaderAndView(); },
+  openDoc: (id, kind) => openDocEditor(id, kind),
+  billingApp: null,
 };
+
+function renderHeaderAndView() {
+  renderHeader(document.getElementById('app'));
+  renderActiveView();
+}
 
 const VIEWS = {
   gantt: { label: 'Gantt', icon: '▦', render: renderGantt },
@@ -40,6 +51,8 @@ const VIEWS = {
   calendar: { label: 'Calendar', icon: '▣', render: renderCalendar },
   resources: { label: 'Resources', icon: '☷', render: renderResources },
   cost: { label: 'Cost / EVM', icon: '▥', render: renderCost },
+  billing: { label: 'Billing', icon: '＄', render: renderBilling },
+  documents: { label: 'Documents', icon: '✉', render: renderDocuments },
 };
 
 let viewMount; // the area where the active view renders
@@ -540,7 +553,7 @@ function openLevelPreview() {
 const SEV_LABEL = { high: 'Critical', medium: 'Attention', low: 'Watch' };
 
 function alertBell() {
-  const s = alertSummary(computeAlerts(store.tasks('all'), store.baseline));
+  const s = alertSummary(computeAlerts(store.tasks('all'), store.baseline, store.docs));
   return el('button', { class: 'alert-bell' + (s.high ? ' urgent' : ''), title: `${s.total} schedule alert${s.total === 1 ? '' : 's'}`, onclick: () => openAlertsPanel() }, [
     el('span', { class: 'bell-ico' }, '🔔'),
     s.total ? el('span', { class: 'bell-badge' + (s.high ? ' high' : '') }, String(s.total)) : null,
@@ -549,7 +562,7 @@ function alertBell() {
 
 function openAlertsPanel() {
   const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
-  const alerts = computeAlerts(store.tasks('all'), store.baseline);
+  const alerts = computeAlerts(store.tasks('all'), store.baseline, store.docs);
   const body = el('div', { class: 'alert-list' });
   if (!alerts.length) {
     body.appendChild(el('div', { class: 'empty' }, '✓ No alerts — nothing overdue, blocked, or slipping.'));
@@ -560,7 +573,7 @@ function openAlertsPanel() {
       body.appendChild(el('div', { class: 'alert-group-head' }, [el('span', { class: 'sev-dot sev-' + sev }), `${SEV_LABEL[sev]} (${group.length})`]));
       group.forEach((a) => {
         const proj = store.project(a.projectId);
-        body.appendChild(el('div', { class: 'alert-row', onclick: () => { close(); ctx.openTask(a.taskId); } }, [
+        body.appendChild(el('div', { class: 'alert-row', onclick: () => { close(); if (a.docId) ctx.openDoc(a.docId); else if (a.taskId) ctx.openTask(a.taskId); } }, [
           el('span', { class: 'sev-dot sev-' + a.severity }),
           el('div', { class: 'alert-main' }, [
             el('div', { class: 'alert-title' }, [a.title, proj ? el('span', { class: 'alert-proj', style: { color: proj.color } }, ' · ' + proj.name) : null]),
@@ -594,7 +607,89 @@ const ACTION_META = {
   'user.create': { icon: '👤', label: 'created user' },
   'user.update': { icon: '🔑', label: 'updated user' },
   'user.delete': { icon: '🗑', label: 'removed user' },
+  'billing.create': { icon: '＄', label: 'generated' },
+  'billing.delete': { icon: '🗑', label: 'deleted' },
+  'doc.create': { icon: '✉', label: 'created' },
+  'doc.update': { icon: '✎', label: 'updated' },
+  'doc.delete': { icon: '🗑', label: 'deleted' },
 };
+
+// --- Submittal / RFI editor -------------------------------------------------
+function openDocEditor(docId, presetKind) {
+  const isNew = docId == null;
+  const editable = store.editableProjects();
+  if (isNew && (!store.can('write') || !editable.length)) return;
+  const d = isNew ? {
+    kind: presetKind === 'rfi' ? 'rfi' : 'submittal',
+    projectId: (ctx.projectId !== 'all' && editable.some((p) => p.id === ctx.projectId)) ? ctx.projectId : (editable[0] && editable[0].id),
+    taskId: null, status: undefined, court: '', due: null, body: '', response: '',
+  } : { ...store.docs.find((x) => x.id === docId) };
+  const kind = d.kind;
+  const meta = DOC_KINDS[kind];
+  const RW = isNew ? store.can('write') : store.canEditProject(d.projectId);
+  const projOptions = isNew ? editable : store.projects.filter((p) => p.id === d.projectId || store.canEditProject(p.id));
+
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+  const f = {};
+  const field = (label, input) => el('div', { class: 'form-field' }, [el('label', {}, label), input]);
+
+  f.title = el('input', { class: 'input', type: 'text', value: d.title || '', placeholder: meta.label + ' title' });
+  f.project = el('select', { class: 'select' }, projOptions.map((p) => el('option', { value: p.id }, p.name))); f.project.value = d.projectId;
+  f.status = el('select', { class: 'select' }, meta.statuses.map((s) => el('option', { value: s }, s.replace('-', ' ')))); f.status.value = d.status || meta.statuses[0];
+  f.court = el('input', { class: 'input', type: 'text', value: d.court || '', placeholder: meta.courtLabel });
+  f.due = el('input', { class: 'input', type: 'date', value: d.due || '' });
+  // task link — tasks in the chosen project
+  const taskOpts = () => [el('option', { value: '' }, '— none —'), ...store.tasks(f.project.value).map((t) => el('option', { value: t.id }, t.name))];
+  f.task = el('select', { class: 'select' }, taskOpts()); f.task.value = d.taskId || '';
+  f.project.addEventListener('change', () => { clear(f.task); taskOpts().forEach((o) => f.task.appendChild(o)); });
+  f.body = el('textarea', { class: 'input', rows: '3', placeholder: meta.bodyLabel }, d.body || '');
+  f.response = el('textarea', { class: 'input', rows: '2', placeholder: meta.responseLabel }, d.response || '');
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [
+      el('h2', {}, (isNew ? 'New ' : '') + meta.label + (isNew ? '' : ' · ' + d.number)),
+      !RW ? el('span', { class: 'role-badge role-viewer' }, 'Read-only') : null,
+      el('button', { class: 'modal-x', onclick: close }, '✕'),
+    ]),
+    el('div', { class: 'modal-body' }, [
+      field('Title', f.title),
+      el('div', { class: 'form-row' }, [field('Project', f.project), field('Status', f.status)]),
+      el('div', { class: 'form-row' }, [field(meta.courtLabel, f.court), field('Due', f.due)]),
+      field('Linked task', f.task),
+      field(meta.bodyLabel, f.body),
+      field(meta.responseLabel, f.response),
+      (!isNew && d.createdBy) ? el('div', { class: 'meta-panel' }, el('div', { class: 'meta-row' }, [el('span', { class: 'meta-k' }, 'Created'), el('span', { class: 'meta-v' }, `${d.createdBy}${d.updatedBy ? ' · last edit ' + d.updatedBy : ''}`)])) : null,
+    ]),
+    el('div', { class: 'modal-foot' }, [
+      (RW && !isNew) ? el('button', { class: 'btn danger', onclick: () => { if (confirm('Delete this ' + meta.label.toLowerCase() + '?')) { store.deleteDoc(docId); close(); renderActiveView(); } } }, 'Delete') : el('span'),
+      el('div', { class: 'foot-right' }, [
+        el('button', { class: 'btn ghost', onclick: close }, RW ? 'Cancel' : 'Close'),
+        RW ? el('button', { class: 'btn primary', onclick: save }, isNew ? 'Create' : 'Save') : null,
+      ]),
+    ]),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  if (!RW) modal.querySelectorAll('input, select, textarea').forEach((n) => { n.disabled = true; });
+  setTimeout(() => { if (RW) f.title.focus(); }, 30);
+
+  function collect() {
+    return {
+      kind, projectId: f.project.value, title: f.title.value.trim() || (meta.label),
+      status: f.status.value, court: f.court.value.trim(), due: f.due.value || null,
+      taskId: f.task.value || null, body: f.body.value, response: f.response.value,
+    };
+  }
+  async function save() {
+    const data = collect();
+    if (isNew) await store.createDoc(data); else store.updateDoc(docId, data);
+    close();
+    renderActiveView();
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
 
 function openActivityPanel() {
   if (!store.can('write')) return;

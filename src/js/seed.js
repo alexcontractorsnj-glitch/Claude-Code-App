@@ -164,9 +164,20 @@ export function seedState() {
     if (d) { t.start = Dates.addDays(t.start, d); t.end = Dates.addDays(t.end, d); }
   });
 
+  // --- Seed a few project documents (submittals + RFIs) --------------------
+  const t0i = Dates.today();
+  const docs = [
+    { id: 'd1', kind: 'submittal', projectId: 'p1', taskId: 't7', number: 'S-001', title: 'Structural steel shop drawings', status: 'under-review', court: 'Architect', due: Dates.addDays(t0i, 5), body: 'Shop drawings for primary steel frame, sequences A–C.', response: '', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -6), updatedBy: null, updatedAt: null, rev: 1 },
+    { id: 'd2', kind: 'submittal', projectId: 'p1', taskId: 't9', number: 'S-002', title: 'Exterior framing — cold-formed metal', status: 'approved', court: 'GC', due: null, body: 'Product data + calcs for CFMF.', response: 'Approved as noted.', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -12), updatedBy: 'A. Whitfield', updatedAt: Dates.addDays(t0i, -3), rev: 2 },
+    { id: 'd3', kind: 'rfi', projectId: 'p1', taskId: 't4', number: 'RFI-001', title: 'Footing rebar conflict at grid B-3', status: 'open', court: 'Structural Engineer', due: Dates.addDays(t0i, -2), body: 'Rebar congestion at pile cap conflicts with anchor bolts — clarify priority.', response: '', createdBy: 'A. Whitfield', createdAt: Dates.addDays(t0i, -4), updatedBy: null, updatedAt: null, rev: 1 },
+    { id: 'd4', kind: 'rfi', projectId: 'p2', taskId: 't16', number: 'RFI-001', title: 'Tilt-up panel embed locations', status: 'answered', court: 'EOR', due: Dates.addDays(t0i, 3), body: 'Confirm embed plate layout for panels 4–7.', response: 'See sketch SK-12; embeds shifted 3" north.', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -8), updatedBy: 'P. Sandoval', updatedAt: Dates.addDays(t0i, -1), rev: 2 },
+    { id: 'd5', kind: 'submittal', projectId: 'p2', taskId: 't17', number: 'S-001', title: 'Roof joist & deck package', status: 'submitted', court: 'Architect', due: Dates.addDays(t0i, 10), body: 'Joist girder layout + deck attachment.', response: '', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -2), updatedBy: null, updatedAt: null, rev: 1 },
+    { id: 'd6', kind: 'rfi', projectId: 'p3', taskId: 't23', number: 'RFI-001', title: 'Existing MEP routing in chase 2', status: 'open', court: 'MEP Engineer', due: Dates.addDays(t0i, -5), body: 'As-builts disagree with field — confirm duct routing.', response: '', createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -7), updatedBy: null, updatedAt: null, rev: 1 },
+  ];
+
   // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
   // is the full history. They share the same object reference for the active one.
-  return { projects, tasks, crews, baseline, baselines: [baseline], version: SCHEMA_VERSION, rev: 1 };
+  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // Next baseline id for a state (b1, b2, …).
@@ -219,6 +230,8 @@ export function applyTaskPatch(t, patch) {
 export function normalizeState(state) {
   if (!state || !Array.isArray(state.tasks)) return seedState();
   if (state.rev == null) state.rev = 1;
+  if (!Array.isArray(state.payApps)) state.payApps = [];
+  if (!Array.isArray(state.docs)) state.docs = [];
   if (state.baseline === undefined) state.baseline = null;
   // Migrate single-baseline states to the baselines[] history model.
   if (!Array.isArray(state.baselines)) {

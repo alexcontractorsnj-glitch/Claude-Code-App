@@ -13,6 +13,8 @@ import {
   TRADES, STATUSES, STATUS_ORDER, Dates,
   seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId, SCHEMA_VERSION,
 } from './seed.js';
+import { buildApplication, appsForProject } from './billing.js';
+import { makeDoc } from './docs.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -383,6 +385,91 @@ class Store {
   }
 
   clearBaseline() { this.activateBaseline('none'); }
+
+  // ---- billing (schedule of values / payment applications) ----
+  get payApps() { return this.state.payApps || []; }
+
+  async createPayApp(projectId, retainagePct) {
+    if (!this.canEditProject(projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.payApps)) this.state.payApps = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/billing', { projectId, retainagePct });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.payApps.push(data); this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const project = this.project(projectId);
+    const prior = appsForProject(this.state.payApps, projectId);
+    const app = buildApplication(project, this.state.tasks, {
+      number: prior.length + 1, retainagePct: Math.min(50, Math.max(0, +retainagePct || 0)),
+      periodTo: Dates.today(), createdBy: this.user, createdAt: new Date().toISOString(),
+    }, prior[prior.length - 1]);
+    app.id = 'pa' + (Math.max(0, ...this.state.payApps.map((a) => +String(a.id).slice(2) || 0)) + 1);
+    this.state.payApps.push(app); this._emit();
+    return app;
+  }
+
+  deletePayApp(id) {
+    const app = this.payApps.find((a) => a.id === id);
+    if (app && !this._guardProject(app.projectId)) return;
+    this.state.payApps = this.payApps.filter((a) => a.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/billing/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- documents (submittals & RFIs) ----
+  get docs() { return this.state.docs || []; }
+
+  async createDoc(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.docs)) this.state.docs = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/docs', partial);
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.docs.push(data); this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const doc = makeDoc(this.state.docs, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.docs.push(doc); this._emit();
+    return doc;
+  }
+
+  updateDoc(id, patch) {
+    const doc = this.docs.find((d) => d.id === id);
+    if (!doc) return;
+    if (!this._guardProject(doc.projectId)) return;
+    Object.assign(doc, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/docs/' + id, patch).then(({ data, etag }) => {
+        if (data && data.rev != null) doc.rev = data.rev;
+        this.rev = revOf(etag) ?? this.rev; this._setSyncing(false);
+      }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteDoc(id) {
+    const doc = this.docs.find((d) => d.id === id);
+    if (doc && !this._guardProject(doc.projectId)) return;
+    this.state.docs = this.docs.filter((d) => d.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/docs/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
 
   deleteTask(id) {
     const target = this.task(id);

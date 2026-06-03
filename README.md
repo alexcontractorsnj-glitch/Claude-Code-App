@@ -14,6 +14,8 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **▣ Calendar** | Month grid with task spans and milestone/inspection markers. This is the crew-dispatch and "what's happening this week" view. |
 | **☷ Resources** | Resource-leveling view — one row per crew, their tasks lane-packed so over-allocation is visible, with double-booked tasks ringed in red. This is the "who's overcommitted" view. |
 | **▥ Cost / EVM** | Earned-Value dashboard — BAC/PV/EV/AC, CPI & SPI, cost/schedule variances, and a forecast at completion (EAC/VAC), with a cost-performance S-curve and a per-project table. This is the controls/finance view. |
+| **＄ Billing** | Schedule of Values & progress billing — AIA G702/G703-style payment applications driven by each task's cost + % complete, with retainage, "from previous / this period", current payment due, application history, and CSV export. |
+| **✉ Documents** | Submittal & RFI tracking — per-project logs with status workflows, ball-in-court / assignee, due dates, and a link to the related task. Overdue open items feed the alert center. |
 
 ## Run it
 
@@ -56,6 +58,8 @@ views changes.
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
 | `GET /api/audit` | activity log, newest first (`?all=1` for the full log; write role) |
 | `GET /api/tasks/:id/history` | full audit trail for one task (read) |
+| `POST /api/billing`, `DELETE /api/billing/:id` | generate / delete a payment application |
+| `POST/PATCH/DELETE /api/docs/:id?` | submittal & RFI CRUD |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -176,12 +180,33 @@ The Activity panel is **filterable** (by action, user, project, free text) and
 **exports to CSV** (the filtered rows). `GET /api/audit?all=1` returns the full
 log (capped at 500) for export.
 
+### Schedule of Values & progress billing
+
+The **Billing** view turns the cost-loaded schedule into AIA-style **payment
+applications**. Each task's scheduled value (its cost) and % complete produce a
+**G703 continuation sheet** (scheduled value, from-previous, this-period,
+completed-to-date, %, balance, retainage) and a **G702 summary** (completed &
+stored, retainage, less previous certificates, **current payment due**). Generate
+an application from current progress (retainage configurable), browse the
+application history, and export the G703 to CSV. Generating/deleting is
+project-scoped and audited; `POST/DELETE /api/billing`.
+
+### Submittals & RFIs
+
+The **Documents** view tracks **submittals** (draft → submitted → under-review →
+approved/rejected) and **RFIs** (open → answered → closed) per project, each with
+ball-in-court/assignee, a due date, free-text body + response, and an optional
+link to the task it concerns. Create/edit/delete is project-scoped and audited
+(`POST/PATCH/DELETE /api/docs`); **overdue open items surface in the alert
+center** (overdue RFIs are flagged critical).
+
 ### Alerts (notification center)
 
 The header **🔔 bell** shows a live count of schedule alerts derived from the
-current plan + active baseline: **overdue** tasks/milestones, **blocked** work,
-and **milestones slipping** versus baseline — sorted by severity, each clicking
-through to the task. Detection is pure and tested (`alerts.js`).
+current plan, active baseline, and documents: **overdue** tasks/milestones,
+**blocked** work, **milestones slipping** versus baseline, and **overdue
+submittals/RFIs** — sorted by severity, each clicking through to the task or
+document. Detection is pure and tested (`alerts.js`).
 
 > Out of scope for this offline demo: pushing these alerts out over
 > **email/webhook**. That's a thin server addition — a job that diffs the alert
@@ -261,7 +286,9 @@ src/
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
     variance.js         # pure baseline variance + baseline-to-baseline compare
     leveling.js         # pure resource leveling: conflicts, lane packing, auto-level (+options)
-    alerts.js           # pure derived alerts (overdue / blocked / milestone slip)
+    billing.js          # pure schedule-of-values / G702-G703 payment-application math
+    docs.js             # pure submittal/RFI model: kinds, statuses, numbering, overdue
+    alerts.js           # pure derived alerts (overdue / blocked / slip / overdue docs)
     data.js             # browser store: identity, mutations + attribution,
                         #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
@@ -272,6 +299,8 @@ src/
       calendar.js       # month grid with spans + milestones
       resources.js      # crew timeline with lane-packing + conflict highlighting
       cost.js           # earned-value dashboard + S-curve + per-project table
+      billing.js        # G702 summary + G703 continuation sheet + CSV export
+      documents.js      # submittal & RFI columns with status badges + due dates
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -286,9 +315,9 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Email/webhook delivery for the alert center
-- Schedule-of-values / progress billing tied to earned value
 - Mobile-friendly field view for crews
-- Submittal & RFI tracking linked to tasks
+- Change-order management feeding revised contract sums into billing
+- Daily field reports (weather, manpower, deliveries) linked to tasks
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
@@ -300,4 +329,5 @@ zero total float are flagged), not hard-coded.
 ✅ resource leveling + per-task history timeline ·
 ✅ one-click auto-leveling with options (critical-path protection, freeze, horizon) ·
 ✅ baseline history (multiple baselines, compare across revisions) ·
-✅ filterable + CSV-exportable audit log + in-app alert center.
+✅ filterable + CSV-exportable audit log + in-app alert center ·
+✅ schedule of values / progress billing (G702/G703) + submittal & RFI tracking.

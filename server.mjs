@@ -18,6 +18,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId } from './src/js/seed.js';
+import { buildApplication, appsForProject } from './src/js/billing.js';
+import { makeDoc, DOC_KINDS } from './src/js/docs.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -313,6 +315,78 @@ async function handleApi(req, res, urlPath) {
         bump();
         await persistState();
         logAudit(actor, 'baseline.delete', { targetName: removed ? removed.label : id });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'billing') {
+      if (!Array.isArray(state.payApps)) state.payApps = [];
+      if (method === 'POST' && !id) {                 // generate a payment application
+        const body = await readBody(req);
+        const project = state.projects.find((p) => p.id === body.projectId);
+        if (!project) return send(res, 400, { error: 'unknown project' });
+        if (!canEditProject(actor, project.id)) return send(res, 403, { error: 'you do not have access to that project' });
+        const prior = appsForProject(state.payApps, project.id);
+        const app = buildApplication(project, state.tasks, {
+          number: prior.length + 1,
+          retainagePct: Math.min(50, Math.max(0, +body.retainagePct || 0)),
+          periodTo: body.periodTo || new Date().toISOString().slice(0, 10),
+          createdBy: actor.name, createdAt: new Date().toISOString(),
+        }, prior[prior.length - 1]);
+        app.id = 'pa' + (Math.max(0, ...state.payApps.map((a) => +String(a.id).slice(2) || 0)) + 1);
+        state.payApps.push(app);
+        bump();
+        await persistState();
+        logAudit(actor, 'billing.create', { targetName: `Application #${app.number}`, projectId: project.id });
+        return send(res, 201, app, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const app = state.payApps.find((a) => a.id === id);
+        if (!app) return send(res, 404, { error: 'application not found' });
+        if (!canEditProject(actor, app.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.payApps = state.payApps.filter((a) => a.id !== id);
+        bump();
+        await persistState();
+        logAudit(actor, 'billing.delete', { targetName: `Application #${app.number}`, projectId: app.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'docs') {
+      if (!Array.isArray(state.docs)) state.docs = [];
+      if (method === 'POST' && !id) {                 // create a submittal / RFI
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const doc = makeDoc(state.docs, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.docs.push(doc);
+        bump();
+        await persistState();
+        logAudit(actor, 'doc.create', { targetId: doc.id, targetName: `${doc.number} ${doc.title}`, projectId: doc.projectId });
+        return send(res, 201, doc, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const doc = state.docs.find((d) => d.id === id);
+        if (!doc) return send(res, 404, { error: 'document not found' });
+        if (!canEditProject(actor, doc.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'status', 'court', 'due', 'body', 'response', 'taskId'].forEach((k) => {
+          if (body[k] !== undefined) doc[k] = body[k];
+        });
+        if (!DOC_KINDS[doc.kind].statuses.includes(doc.status)) doc.status = DOC_KINDS[doc.kind].statuses[0];
+        doc.updatedBy = actor.name; doc.updatedAt = new Date().toISOString(); doc.rev = (doc.rev || 1) + 1;
+        bump();
+        await persistState();
+        logAudit(actor, 'doc.update', { targetId: doc.id, targetName: `${doc.number} ${doc.title}`, projectId: doc.projectId, detail: `status ${doc.status}` });
+        return send(res, 200, doc, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const doc = state.docs.find((d) => d.id === id);
+        if (!doc) return send(res, 404, { error: 'document not found' });
+        if (!canEditProject(actor, doc.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.docs = state.docs.filter((d) => d.id !== id);
+        bump();
+        await persistState();
+        logAudit(actor, 'doc.delete', { targetId: id, targetName: `${doc.number} ${doc.title}`, projectId: doc.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
