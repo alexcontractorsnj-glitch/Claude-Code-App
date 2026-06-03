@@ -37,6 +37,21 @@ module imports resolve.)
 The footer shows a live pill: **Synced to server** when the REST API is reachable,
 **Local cache** otherwise.
 
+## Tests
+
+Zero-dependency, so the suite runs on stock Node:
+
+```bash
+npm run lint     # node --check across every module
+npm test         # pure-logic unit tests + a live API/RBAC integration run
+```
+
+`test/units.mjs` covers the pure logic (CPM, EVM, variance, leveling + auto-level,
+billing G702/G703, documents, change orders, field reports, punch, alerts);
+`test/api.mjs` boots `server.mjs` on a test port and checks auth, optimistic
+locking, project scope, and CRUD over HTTP. A **SessionStart hook**
+(`.claude/hooks/session-start.sh`) makes these ready in Claude Code on the web.
+
 ## Persistence — server-backed, with offline fallback
 
 `npm start` runs `server.mjs`, which serves the static app **and** a small REST

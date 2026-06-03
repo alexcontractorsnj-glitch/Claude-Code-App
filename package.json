@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node server.mjs 8000"
+    "dev": "node server.mjs 8000",
+    "lint": "node test/lint.mjs",
+    "test": "node test/units.mjs && node test/api.mjs"
   },
   "keywords": ["erp", "construction", "gantt", "kanban", "scheduling", "project-management"],
   "license": "MIT",
