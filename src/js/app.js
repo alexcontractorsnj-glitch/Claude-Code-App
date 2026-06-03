@@ -11,7 +11,7 @@ import { renderCalendar } from './views/calendar.js';
 import { renderCost } from './views/cost.js';
 import { renderResources } from './views/resources.js';
 import { scheduleVariance, taskVariance } from './variance.js';
-import { levelingSummary, assignmentConflicts } from './leveling.js';
+import { levelingSummary, assignmentConflicts, proposeLeveling } from './leveling.js';
 
 const ctx = {
   view: 'gantt',
@@ -139,6 +139,9 @@ function renderHeader(root) {
     ]),
     el('div', { class: 'toolbar-right' }, [
       baselineControls(),
+      (ctx.view === 'resources' && store.canBaseline() && levelingSummary(store.tasks('all')).conflictPairs)
+        ? el('button', { class: 'btn', title: 'Propose date shifts to resolve crew double-bookings', onclick: () => openLevelPreview() }, '⚖ Auto-level')
+        : null,
       ctx.view === 'gantt' ? toggle('Critical Path', ctx.showCritical, (v) => { ctx.showCritical = v; renderActiveView(); }) : null,
       ctx.view === 'gantt' && store.baseline ? toggle('Baseline', ctx.showBaseline, (v) => { ctx.showBaseline = v; renderActiveView(); }) : null,
       store.can('admin') ? el('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset all schedule data to the seeded sample?')) store.reset(); } }, '↺ Reset Demo') : null,
@@ -382,6 +385,56 @@ function openEditor(taskId) {
   function save() {
     const data = collect();
     if (isNew) store.addTask(data); else store.updateTask(taskId, data);
+    close();
+  }
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+}
+
+// --- Auto-leveling preview --------------------------------------------------
+function openLevelPreview() {
+  if (!store.canBaseline()) return;
+  const changes = proposeLeveling(store.tasks('all'));
+  const overlay = el('div', { class: 'modal-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+
+  const rows = changes.map((c) => {
+    const proj = store.project(c.projectId);
+    return el('div', { class: 'level-row' }, [
+      el('div', { class: 'level-task' }, [
+        el('span', { class: 'level-name' }, c.name),
+        proj ? el('span', { class: 'level-proj', style: { color: proj.color } }, proj.name) : null,
+      ]),
+      el('span', { class: 'level-dates' }, `${Dates.fmt(c.oldStart)}→${Dates.fmt(c.oldEnd)}`),
+      el('span', { class: 'level-arrow' }, '→'),
+      el('span', { class: 'level-dates new' }, `${Dates.fmt(c.newStart)}→${Dates.fmt(c.newEnd)}`),
+      el('span', { class: 'level-delta' }, `+${c.deltaDays}d`),
+    ]);
+  });
+
+  const body = changes.length
+    ? el('div', {}, [
+        el('div', { class: 'level-intro' }, `${changes.length} task${changes.length === 1 ? '' : 's'} will be pushed later to give each crew one job at a time (dependencies preserved; nothing moves earlier).`),
+        el('div', { class: 'level-list' }, rows),
+      ])
+    : el('div', { class: 'empty' }, 'No changes needed — the schedule is already conflict-free.');
+
+  const applyBtn = changes.length ? el('button', { class: 'btn primary', onclick: apply }, `Apply ${changes.length} shift${changes.length === 1 ? '' : 's'}`) : null;
+
+  const modal = el('div', { class: 'modal' }, [
+    el('div', { class: 'modal-head' }, [el('h2', {}, 'Auto-level — proposed changes'), el('button', { class: 'modal-x', onclick: close }, '✕')]),
+    el('div', { class: 'modal-body' }, body),
+    el('div', { class: 'modal-foot' }, [el('span'), el('div', { class: 'foot-right' }, [
+      el('button', { class: 'btn ghost', onclick: close }, changes.length ? 'Cancel' : 'Close'),
+      applyBtn,
+    ])]),
+  ]);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  function apply() {
+    changes.forEach((c) => store.updateTask(c.id, { start: c.newStart, end: c.newEnd }));
+    store._notify(`Auto-leveled ${changes.length} task${changes.length === 1 ? '' : 's'} — crew conflicts resolved.`, 'info');
     close();
   }
   function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }

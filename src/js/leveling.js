@@ -71,3 +71,61 @@ export function levelingSummary(tasks) {
   const crews = new Set(conflicts.map((c) => c.crewId));
   return { conflictPairs: conflicts.length, crewsOverallocated: crews.size, taskIds: conflictTaskIds(tasks) };
 }
+
+// ---------------------------------------------------------------------------
+//  Auto-leveling — a serial schedule-generation scheme. Walks tasks in
+//  dependency (topological) order, scheduling each at the earliest date that
+//  respects (a) its finish-to-start predecessors and (b) its crew's capacity
+//  (one task per crew at a time). Tasks only ever move LATER, never earlier, so
+//  the result is a conflict-free, dependency-valid schedule. Pure + deterministic.
+//  Returns the list of proposed changes (only tasks whose dates move).
+// ---------------------------------------------------------------------------
+const cmp = (a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+export function proposeLeveling(tasks) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const dur = (t) => Math.max(1, Dates.diffDays(t.start, t.end) + 1);
+
+  // Topological order, breaking ties by (start, id) for determinism.
+  const indeg = new Map(tasks.map((t) => [t.id, 0]));
+  const succ = new Map(tasks.map((t) => [t.id, []]));
+  tasks.forEach((t) => (t.dependencies || []).forEach((d) => {
+    if (byId.has(d)) { indeg.set(t.id, indeg.get(t.id) + 1); succ.get(d).push(t.id); }
+  }));
+  const ready = tasks.filter((t) => indeg.get(t.id) === 0).sort(cmp).map((t) => t.id);
+  const order = [];
+  while (ready.length) {
+    const id = ready.shift();
+    order.push(id);
+    succ.get(id).forEach((s) => {
+      indeg.set(s, indeg.get(s) - 1);
+      if (indeg.get(s) === 0) ready.push(s);
+    });
+    ready.sort((a, b) => cmp(byId.get(a), byId.get(b)));
+  }
+  tasks.forEach((t) => { if (!order.includes(t.id)) order.push(t.id); }); // any cycle remnants
+
+  const schedEnd = new Map();   // task id → scheduled finish
+  const crewFree = new Map();   // crew id → next free date
+  const changes = [];
+  order.forEach((id) => {
+    const t = byId.get(id);
+    let start = t.start;
+    (t.dependencies || []).forEach((dep) => {
+      if (schedEnd.has(dep)) { const after = Dates.addDays(schedEnd.get(dep), 1); if (after > start) start = after; }
+    });
+    if (t.crewId && !t.milestone) { const cf = crewFree.get(t.crewId); if (cf && cf > start) start = cf; }
+    const end = t.milestone ? start : Dates.addDays(start, dur(t) - 1);
+    schedEnd.set(id, end);
+    if (t.crewId && !t.milestone) crewFree.set(t.crewId, Dates.addDays(end, 1));
+    if (start !== t.start || end !== t.end) {
+      changes.push({
+        id, name: t.name, projectId: t.projectId,
+        oldStart: t.start, oldEnd: t.end, newStart: start, newEnd: end,
+        deltaDays: Dates.diffDays(t.start, start),
+      });
+    }
+  });
+  return changes;
+}
+

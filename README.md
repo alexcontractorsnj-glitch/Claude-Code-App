@@ -174,6 +174,14 @@ when the crew + dates you pick collide with that crew's existing bookings
 (across all projects). Detection is pure and tested (`leveling.js`); the seed
 ships an intentionally unleveled schedule so conflicts show immediately.
 
+**One-click auto-leveling**: the **⚖ Auto-level** button (Resources view,
+unrestricted writers) runs a serial schedule-generation scheme — it walks tasks
+in dependency order and gives each crew one job at a time, pushing tasks *later*
+as needed (never earlier, dependencies preserved). It shows a **preview** of
+every proposed shift (old → new dates, +days) before you apply; applying writes
+the changes through the normal PATCH path (so concurrency, scope and the audit
+log all still apply). The result is a conflict-free schedule.
+
 ### Earned-Value Management (CPI/SPI)
 
 Each task is **cost-loaded** (a `cost` = budget-at-completion and an `actualCost`
@@ -220,7 +228,7 @@ src/
                         #   normalizeState migration (imported by browser AND server)
     evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
     variance.js         # pure baseline-vs-actual schedule variance
-    leveling.js         # pure resource leveling: conflict detection + lane packing
+    leveling.js         # pure resource leveling: conflicts, lane packing, auto-level
     data.js             # browser store: identity, mutations + attribution,
                         #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
@@ -244,9 +252,9 @@ zero total float are flagged), not hard-coded.
 
 ## Roadmap (next sprints)
 
-- One-click auto-leveling (suggest shifts to resolve crew conflicts)
 - Baseline history (keep multiple baselines, compare across revisions)
 - Exportable audit log (CSV) + global activity filters
+- Auto-level options (limit horizon, prioritise critical-path tasks)
 - Notifications (email/webhook) on milestone slips or blocked tasks
 
 **Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
@@ -256,4 +264,5 @@ zero total float are flagged), not hard-coded.
 ✅ baseline vs. actual variance tracking ·
 ✅ authentication (scrypt + sessions) & role-based permissions ·
 ✅ project-scoped permissions + in-app audit log ·
-✅ resource leveling (crew conflict detection) + per-task history timeline.
+✅ resource leveling + per-task history timeline ·
+✅ one-click auto-leveling with preview.
