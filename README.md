@@ -12,21 +12,295 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **▦ Gantt** | The schedule backbone. Time-scaled bars, finish-to-start dependency arrows, a live **Critical Path** overlay (CPM forward/backward pass), per-task % complete, milestones (◆), weekend bands, and a "today" line. This is how a PM sees float and what's driving the end date. |
 | **▤ Board** | Kanban by status (Not Started → In Progress → Blocked → Done). **Drag a card** between columns to update status in the field. This is the daily-standup / superintendent view. |
 | **▣ Calendar** | Month grid with task spans and milestone/inspection markers. This is the crew-dispatch and "what's happening this week" view. |
+| **☷ Resources** | Resource-leveling view — one row per crew, their tasks lane-packed so over-allocation is visible, with double-booked tasks ringed in red. This is the "who's overcommitted" view. |
+| **▥ Cost / EVM** | Earned-Value dashboard — BAC/PV/EV/AC, CPI & SPI, cost/schedule variances, and a forecast at completion (EAC/VAC), with a cost-performance S-curve and a per-project table. This is the controls/finance view. |
+| **＄ Billing** | Schedule of Values & progress billing — AIA G702/G703-style payment applications driven by each task's cost + % complete, with retainage, "from previous / this period", current payment due, application history, and CSV export. |
+| **✉ Documents** | Submittal & RFI tracking — per-project logs with status workflows, ball-in-court / assignee, due dates, and a link to the related task. Overdue open items feed the alert center. |
+| **☰ Field** | Daily field reports — weather, temperature, manpower, work performed, deliveries and delays, newest first. The site's daily log. |
+| **✔ Punch** | Punch list & closeout — deficiency items with status (open → ready → accepted/rejected), priority, location, trade, assignee, and a closeout-readiness roll-up. |
 
 ## Run it
 
-No build step, no dependencies — pure ES modules.
+No build step, no `npm install` — pure ES modules + a zero-dependency Node server.
 
 ```bash
-# Option A: the bundled zero-dependency Node server
+# Recommended: static host + REST API (server-backed persistence)
 npm start            # → http://localhost:8000
 
-# Option B: any static server
+# Or any static server (no API → the app runs on LocalStorage only)
 python3 -m http.server 8000
 ```
 
 Then open **http://localhost:8000**. (Open via a server, not `file://`, so ES
 module imports resolve.)
+
+The footer shows a live pill: **Synced to server** when the REST API is reachable,
+**Local cache** otherwise.
+
+## Tests
+
+Zero-dependency, so the suite runs on stock Node:
+
+```bash
+npm run lint     # node --check across every module
+npm test         # pure-logic unit tests + a live API/RBAC integration run
+```
+
+`test/units.mjs` covers the pure logic (CPM, EVM, variance, leveling + auto-level,
+billing G702/G703, documents, change orders, field reports, punch, alerts);
+`test/api.mjs` boots `server.mjs` on a test port and checks auth, optimistic
+locking, project scope, and CRUD over HTTP. A **SessionStart hook**
+(`.claude/hooks/session-start.sh`) makes these ready in Claude Code on the web.
+
+## Persistence — server-backed, with offline fallback
+
+`npm start` runs `server.mjs`, which serves the static app **and** a small REST
+API that persists schedule state to `data/schedule.json`. The browser store
+hydrates from the API on load and writes changes back optimistically; if the API
+isn't there (e.g. you opened it through a plain static server), it transparently
+falls back to **LocalStorage** with the identical interface — no code path in the
+views changes.
+
+| Method & path | Action |
+|---|---|
+| `GET /api/state` | full schedule `{ projects, crews, tasks }` |
+| `POST /api/tasks` | create a work package |
+| `PATCH /api/tasks/:id` | update (progress/status coherence applied server-side) |
+| `DELETE /api/tasks/:id` | delete + strip dangling dependency refs |
+| `POST /api/reset` | reseed the sample data |
+| `POST /api/baseline` | capture a new baseline (becomes active) |
+| `POST /api/baseline/:id/activate` | switch the active baseline (`/none` = off) |
+| `DELETE /api/baseline/:id` | delete a baseline from history |
+| `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` | session auth |
+| `GET/POST /api/users`, `PATCH/DELETE /api/users/:username` | admin user management (role + project scope) |
+| `GET /api/audit` | activity log, newest first (`?all=1` for the full log; write role) |
+| `GET /api/tasks/:id/history` | full audit trail for one task (read) |
+| `POST /api/billing`, `DELETE /api/billing/:id` | generate / delete a payment application |
+| `POST/PATCH/DELETE /api/docs/:id?` | submittal & RFI CRUD |
+| `POST/PATCH/DELETE /api/changeorders/:id?` | change-order CRUD (approved → billing) |
+| `POST/PATCH/DELETE /api/reports/:id?` | daily field report CRUD |
+| `POST/PATCH/DELETE /api/punch/:id?` | punch-list item CRUD |
+
+All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
+task writes are checked against the caller's **project scope**, baselines need
+unrestricted access, and `reset`/`users` require `admin`.
+
+The domain core (seed data, date math, `makeTask`, `applyTaskPatch`) lives in
+**`src/js/seed.js`** and is imported by *both* the browser and the server, so the
+business rules exist in exactly one place.
+
+### Multi-user concurrency (optimistic locking + live sync)
+
+The API is safe for two people editing at once:
+
+- Every task carries a `rev`; the whole state carries a global `rev` surfaced as
+  an **`ETag`**.
+- `PATCH` sends **`If-Match: "<task rev>"`**. If someone else changed the task
+  first, the server returns **`409 Conflict`** with the current task — the client
+  then reloads the latest and shows a toast instead of silently clobbering.
+- The browser **polls `GET /api/state` with `If-None-Match`** every few seconds;
+  the server answers **`304 Not Modified`** when nothing changed, or sends the new
+  state when another user edits — so a change in one tab appears in another within
+  the poll interval. Open the app in two browser windows to see it.
+
+### Baseline vs. actual variance
+
+Snapshot the current schedule as a **baseline** (the toolbar's *Save Baseline* /
+*Re-baseline* / *Clear*), then the app measures slip against it:
+
+- The Gantt draws a **ghost baseline bar** beneath each task (grey = on plan,
+  red = finishing late, green = early); the bar's tooltip shows the day slip.
+  Toggle it with the **Baseline** switch.
+- The KPI bar swaps in **Behind Baseline** (task count) and **Avg Finish Slip**
+  (days) once a baseline exists.
+- The task dialog shows that task's baseline dates and finish variance.
+
+The demo ships with a baseline already captured and a few work packages drifted,
+so the variance is visible immediately.
+
+**Baseline history** — you can keep **multiple** baselines (e.g. *Original Plan*,
+*Rev B — after client changes*) and switch which one variance compares against
+from the **Baselines** panel. Each row shows when/who saved it and how many tasks
+were **re-planned versus the previous revision**, so you can see how the plan
+itself evolved. `POST /api/baseline` captures a new one (and makes it active),
+`POST /api/baseline/:id/activate` switches the active baseline (`/none` to turn
+comparison off), and `DELETE /api/baseline/:id` removes one.
+
+### Authentication & per-user permissions
+
+When served by `server.mjs`, the app **requires sign-in** and enforces
+**role-based access control**. (Served by a plain static host with no API, it
+runs in single-user local mode with no login.)
+
+**Demo accounts** (also shown on the login screen):
+
+| Username | Password | Role | Can |
+|----------|----------|------|-----|
+| `admin` | `admin123` | admin | everything incl. reset, baselines + user management |
+| `awhitfield` | `build123` | pm · **Riverside only** | edit tasks in their assigned project(s) |
+| `psandoval` | `north123` | pm · **Northgate + Civic** | edit tasks in their assigned project(s) |
+| `viewer` | `view123` | viewer | read-only |
+
+How it works:
+
+- **Passwords** are hashed with `scrypt` + a per-user random salt and compared in
+  constant time (`crypto.timingSafeEqual`). Plaintext is never stored. Users live
+  in `data/auth.json`, separate from the schedule.
+- **Sessions**: login issues a crypto-random token stored server-side and set as
+  an **`HttpOnly; SameSite=Strict`** cookie. Sessions expire after 12h; logout
+  destroys them; changing a user's role revokes their existing sessions.
+- **RBAC** is enforced **server-side** on every `/api` route: reads need a
+  session, writes need `pm`+, and `reset`/user-management need `admin`
+  (`401` unauthenticated, `403` forbidden). The UI mirrors this (hides New Task,
+  baseline, reset, drag, etc. for read-only roles), but the server is the
+  boundary — a viewer's edits are rejected even if the client is bypassed.
+- **Attribution** is taken from the authenticated session, so it **can't be
+  spoofed** by a header. Tasks show who last edited them; the conflict toast
+  names them.
+- **Login throttling**: 5 failed attempts per username triggers a 60-second
+  lockout (`429`).
+- **Admins** manage users (create / set role / delete, with last-admin
+  protection) from the **Users** panel in the header.
+
+> **Production note:** the session cookie omits the `Secure` flag because the
+> demo runs over plain HTTP on localhost — behind HTTPS you'd add `Secure`.
+> Sessions are in-memory (a restart logs everyone out); a real deployment would
+> back them with a store like Redis.
+
+### Project-scoped permissions
+
+A PM can be **scoped to specific projects**. A pm with an empty project list is
+unrestricted (all projects); a non-empty list limits their writes to those
+projects only. Everyone can still *read* the whole portfolio.
+
+- The server checks the task's `projectId` against the caller's scope on every
+  task write (`403` outside scope), and **baselines require unrestricted access**
+  (they're schedule-wide).
+- The UI mirrors it per task: a scoped PM can drag / edit / create only in their
+  projects; the editor's project picker is limited accordingly; out-of-scope
+  tasks open read-only.
+- Admins assign scope from the **Users** panel — click the project chips on a PM
+  row (no chips selected = all projects). Changing scope revokes the user's
+  sessions so it takes effect on next login.
+
+### Activity log (audit)
+
+Every successful change is recorded to an append-only **audit log**
+(`data/audit.json`, capped to the latest 500) attributed to the session user:
+task create/update/delete, baseline save/clear, schedule reset, and user
+management. Open it from the **Activity** button in the header (pm+); it shows
+who did what, to which task/project, and when. `GET /api/audit` returns the most
+recent 200 entries (write role required).
+
+Each task also has its own **history timeline**: open a task and click *Show
+change history* (`GET /api/tasks/:id/history`, any authenticated user) to see
+every recorded change to just that task, newest first.
+
+The Activity panel is **filterable** (by action, user, project, free text) and
+**exports to CSV** (the filtered rows). `GET /api/audit?all=1` returns the full
+log (capped at 500) for export.
+
+### Schedule of Values & progress billing
+
+The **Billing** view turns the cost-loaded schedule into AIA-style **payment
+applications**. Each task's scheduled value (its cost) and % complete produce a
+**G703 continuation sheet** (scheduled value, from-previous, this-period,
+completed-to-date, %, balance, retainage) and a **G702 summary** (completed &
+stored, retainage, less previous certificates, **current payment due**). Generate
+an application from current progress (retainage configurable), browse the
+application history, and export the G703 to CSV. Generating/deleting is
+project-scoped and audited; `POST/DELETE /api/billing`.
+
+**Change orders** are managed from the Billing view: raise a CO (signed amount —
+negative for credits — plus a schedule-impact in days), move it through
+draft → pending → approved/rejected/void, and **approved COs roll into the G702**
+as *net change by change order* → *contract sum to date*, adjusting the balance
+to finish. `POST/PATCH/DELETE /api/changeorders`, project-scoped + audited.
+
+### Daily field reports
+
+The **Field** view is the site's daily log: weather + temperature, manpower,
+work performed, deliveries, and delays — newest first, one card per day, create/
+edit per project. `POST/PATCH/DELETE /api/reports`, project-scoped + audited.
+
+### Punch list & closeout
+
+The **Punch** view tracks deficiency items (open → ready-for-review →
+accepted/rejected) with priority, location, trade, and assignee, plus a
+**closeout-readiness** roll-up (% accepted, open/ready/rejected counts, blocking
+items). High-priority open items feed the alert center.
+`POST/PATCH/DELETE /api/punch`, project-scoped + audited.
+
+### Attachments
+
+Punch items and daily reports carry **attachments by reference** — name + URL +
+caption (e.g. a link to a site photo or drawing), added in their editors.
+
+> Honest scope: this stores attachment *links*, not uploaded binaries. Real photo
+> upload needs a blob/object store (S3 or similar) the offline demo doesn't have;
+> the model + UI are built so wiring an uploader later is a drop-in.
+
+### Submittals & RFIs
+
+The **Documents** view tracks **submittals** (draft → submitted → under-review →
+approved/rejected) and **RFIs** (open → answered → closed) per project, each with
+ball-in-court/assignee, a due date, free-text body + response, and an optional
+link to the task it concerns. Create/edit/delete is project-scoped and audited
+(`POST/PATCH/DELETE /api/docs`); **overdue open items surface in the alert
+center** (overdue RFIs are flagged critical).
+
+### Alerts (notification center)
+
+The header **🔔 bell** shows a live count of schedule alerts derived from the
+current plan, active baseline, and documents: **overdue** tasks/milestones,
+**blocked** work, **milestones slipping** versus baseline, and **overdue
+submittals/RFIs** — sorted by severity, each clicking through to the task or
+document. Detection is pure and tested (`alerts.js`).
+
+> Out of scope for this offline demo: pushing these alerts out over
+> **email/webhook**. That's a thin server addition — a job that diffs the alert
+> set and POSTs new ones to a configured endpoint — not something wired up here.
+
+### Resource leveling
+
+The **Resources** view lays each crew out on the timeline with their tasks
+**lane-packed** — if a crew is assigned to overlapping tasks, the extra lanes
+make the double-booking obvious and the conflicting bars are ringed in red. The
+KPI bar shows a live **Crew Conflicts** count, and the task editor warns inline
+when the crew + dates you pick collide with that crew's existing bookings
+(across all projects). Detection is pure and tested (`leveling.js`); the seed
+ships an intentionally unleveled schedule so conflicts show immediately.
+
+**One-click auto-leveling**: the **⚖ Auto-level** button (Resources view,
+unrestricted writers) runs a serial schedule-generation scheme — it walks tasks
+in dependency order and gives each crew one job at a time, pushing tasks *later*
+as needed (never earlier, dependencies preserved). It shows a **preview** of
+every proposed shift (old → new dates, +days) before you apply; applying writes
+the changes through the normal PATCH path (so concurrency, scope and the audit
+log all still apply). Options refine the strategy live:
+
+- **Protect critical path** — critical tasks keep crew priority so non-critical
+  work absorbs the delay and the end date is protected.
+- **Freeze started work** — done / in-progress tasks are pinned and others
+  schedule around them.
+- **Horizon** (7/14/30/60d / ∞) — caps how far crew-leveling pushes a task; the
+  preview shows any conflicts that remain within the cap. (Dependencies always
+  win over the horizon, so a chain can still compound past it.)
+
+### Earned-Value Management (CPI/SPI)
+
+Each task is **cost-loaded** (a `cost` = budget-at-completion and an `actualCost`
+= money spent, both editable in the task dialog). The **Cost / EVM** view computes
+standard EVM at today's data date:
+
+```
+PV  planned value   EV  earned value     AC  actual cost
+CPI = EV/AC         SPI = EV/PV          CV = EV−AC   SV = EV−PV
+EAC = BAC/CPI       ETC = EAC−AC         VAC = BAC−EAC
+```
+
+…and renders a cost-performance S-curve (planned-value curve + EV/AC markers at
+today + EAC forecast) and a per-project earned-value table with a health verdict.
 
 ## What's in the box
 
@@ -39,24 +313,48 @@ module imports resolve.)
 - **Filters** by project and trade, applied across all three views.
 - **Full task editor**: name, project, trade, crew, dates, status, progress,
   dependencies (multi-select), and milestone toggle. Create / edit / delete.
-- **Local persistence** — everything is saved to your browser's LocalStorage, so
-  it behaves like a real app between reloads. "↺ Reset Demo" restores the seed.
+- **Drag-to-reschedule on the Gantt** — grab a bar to shift it in time, or drag
+  either **edge** to change just the start or finish (snaps to whole days, with a
+  live date readout). Milestones drag too. Releasing commits to the store, which
+  recomputes the critical path and redraws dependency links.
+- **Persistence** — server-backed via the REST API when available, with automatic
+  LocalStorage fallback. "↺ Reset Demo" restores the seed.
 
 ## Architecture
 
 ```
 index.html              # shell, loads fonts + the ES-module entry
-server.js               # ~40-line static server (no npm install needed)
+server.mjs              # zero-dep static host + REST API + auth gate + persistence
+auth.js                 # server-only: scrypt hashing, sessions, RBAC, project scope, throttling
 src/
   css/styles.css        # dark "control-room" theme
   js/
-    data.js             # single source of truth: model, store, CPM critical-path
+    seed.js             # shared domain core: model, seed, date math, task rules,
+                        #   normalizeState migration (imported by browser AND server)
+    cpm.js              # pure critical-path method (shared by data + leveling)
+    evm.js              # pure earned-value math (PV/EV/AC, CPI/SPI, EAC, S-curve)
+    variance.js         # pure baseline variance + baseline-to-baseline compare
+    leveling.js         # pure resource leveling: conflicts, lane packing, auto-level (+options)
+    billing.js          # pure schedule-of-values / G702-G703 payment-application math
+    changeorders.js     # pure change-order model + net-approved (feeds billing)
+    fieldreports.js     # pure daily-field-report model
+    punch.js            # pure punch-list/closeout model + attachment sanitizer
+    docs.js             # pure submittal/RFI model: kinds, statuses, numbering, overdue
+    alerts.js           # pure derived alerts (overdue / blocked / slip / overdue docs)
+    data.js             # browser store: identity, mutations + attribution,
+                        #   optimistic locking, live polling, baseline, CPM
     utils.js            # tiny DOM/format helpers (no framework, deliberately)
-    app.js              # controller: router, filters, KPIs, task editor modal
+    app.js              # controller: router, filters, KPIs, task editor, toasts
     views/
-      gantt.js          # time-scaled bars + SVG dependency arrows + today line
+      gantt.js          # time-scaled bars, SVG dep arrows, today line, drag-resize
       board.js          # drag-and-drop Kanban
       calendar.js       # month grid with spans + milestones
+      resources.js      # crew timeline with lane-packing + conflict highlighting
+      cost.js           # earned-value dashboard + S-curve + per-project table
+      billing.js        # G702 summary + G703 sheet + change-order log + CSV
+      documents.js      # submittal & RFI columns with status badges + due dates
+      field.js          # daily field report cards
+      punch.js          # punch list + closeout-readiness deck
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -70,8 +368,22 @@ zero total float are flagged), not hard-coded.
 
 ## Roadmap (next sprints)
 
-- Resource leveling / crew over-allocation warnings
-- Baseline vs. actual variance tracking
-- Drag-to-reschedule directly on the Gantt bars
-- Server-side persistence + multi-user (REST API behind the same store interface)
-- Cost loading per task → earned-value (CPI/SPI) reporting
+- Email/webhook delivery for the alert center
+- Real file/photo upload (blob store) behind the existing attachment model
+- Mobile-friendly field view for crews
+- Database-backed persistence (replace the JSON files)
+
+**Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
+✅ server-side persistence via REST API behind the same store interface ·
+✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
+✅ earned-value (CPI/SPI) cost reporting with S-curve ·
+✅ baseline vs. actual variance tracking ·
+✅ authentication (scrypt + sessions) & role-based permissions ·
+✅ project-scoped permissions + in-app audit log ·
+✅ resource leveling + per-task history timeline ·
+✅ one-click auto-leveling with options (critical-path protection, freeze, horizon) ·
+✅ baseline history (multiple baselines, compare across revisions) ·
+✅ filterable + CSV-exportable audit log + in-app alert center ·
+✅ schedule of values / progress billing (G702/G703) + submittal & RFI tracking ·
+✅ change-order management (approved COs flow into billing) + daily field reports ·
+✅ punch list / closeout tracking + attachments (by reference).

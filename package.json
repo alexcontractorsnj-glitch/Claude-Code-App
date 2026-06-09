@@ -2,10 +2,12 @@
   "name": "buildflow-erp-schedule",
   "version": "1.0.0",
   "description": "BuildFlow — construction ERP scheduling module with Gantt, Board, and Calendar views",
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js 8000"
+    "start": "node server.mjs",
+    "dev": "node server.mjs 8000",
+    "lint": "node test/lint.mjs",
+    "test": "node test/units.mjs && node test/api.mjs"
   },
   "keywords": ["erp", "construction", "gantt", "kanban", "scheduling", "project-management"],
   "license": "MIT",

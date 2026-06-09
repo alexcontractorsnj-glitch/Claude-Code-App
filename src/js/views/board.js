@@ -8,6 +8,8 @@ import { el, clear, pct } from '../utils.js';
 export function renderBoard(mount, ctx) {
   clear(mount);
   const tasks = store.tasks(ctx.projectId).filter(ctx.filter);
+  const canDrag = (t) => !ctx.canEditProject || ctx.canEditProject(t.projectId);  // role + project scope
+  const anyWrite = !ctx.canWrite || ctx.canWrite();
   const board = el('div', { class: 'board' });
 
   STATUS_ORDER.forEach((status) => {
@@ -22,15 +24,17 @@ export function renderBoard(mount, ctx) {
 
     const list = el('div', { class: 'board-list' });
 
-    // drop handling
-    col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drag-over'); });
-    col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
-    col.addEventListener('drop', (e) => {
-      e.preventDefault();
-      col.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain');
-      if (id) store.updateTask(id, { status });
-    });
+    // drop handling (writers only; per-task project scope verified on drop)
+    if (anyWrite) {
+      col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drag-over'); });
+      col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+      col.addEventListener('drop', (e) => {
+        e.preventDefault();
+        col.classList.remove('drag-over');
+        const id = e.dataTransfer.getData('text/plain');
+        if (id) store.updateTask(id, { status });   // store re-checks project scope
+      });
+    }
 
     colTasks.forEach((t) => {
       const proj = store.project(t.projectId);
@@ -38,7 +42,7 @@ export function renderBoard(mount, ctx) {
       const trade = TRADES[t.trade];
       const card = el('div', {
         class: 'card' + (t.milestone ? ' milestone' : ''),
-        draggable: 'true',
+        draggable: canDrag(t) ? 'true' : null,
         style: { borderLeftColor: trade.color },
         onclick: () => ctx.openTask(t.id),
       }, [
@@ -62,6 +66,7 @@ export function renderBoard(mount, ctx) {
           ]),
           el('span', { class: 'card-progress-label' }, pct(t.progress)),
         ]),
+        t.lastEditedBy ? el('div', { class: 'card-edit' }, `✎ ${t.lastEditedBy}`) : null,
       ]);
 
       card.addEventListener('dragstart', (e) => {

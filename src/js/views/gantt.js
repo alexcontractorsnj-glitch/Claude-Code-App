@@ -3,6 +3,7 @@
 //  Pure DOM/SVG, no libraries. Bars are positioned by date against a day grid.
 // ============================================================================
 import { store, TRADES, STATUSES, Dates, computeCriticalPath } from '../data.js';
+import { taskVariance } from '../variance.js';
 import { el, clear, pct, shade } from '../utils.js';
 
 const DAY_W = 26;       // px per day
@@ -170,6 +171,74 @@ export function renderGantt(mount, ctx) {
 
   // Bars layer (HTML for easy interaction)
   const barsLayer = el('div', { class: 'gantt-bars', style: { top: HEADER_H + 'px', height: gridH + 'px' } });
+
+  // Floating readout shown while dragging (shared across all bars)
+  const tip = el('div', { class: 'gantt-drag-tip' });
+  barsLayer.appendChild(tip);
+
+  // ---- Drag-to-reschedule -------------------------------------------------
+  // kind: 'move' (shift both ends) | 'left' (change start) | 'right' (change
+  // end) | 'milestone' (move the single date). Snaps to whole days. Commits to
+  // the store on release, which triggers a full re-render (deps/CP refresh).
+  function attachDrag(node, t, kind, posKey) {
+    node.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (ctx.canEditProject && !ctx.canEditProject(t.projectId)) return;  // role/scope: no rescheduling
+      if (kind === 'move' && e.target.classList.contains('bar-handle')) return; // let handle own it
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const origLeft = parseFloat(node.style.left);
+      const origWidth = kind === 'milestone' ? 0 : parseFloat(node.style.width);
+      const span = Dates.diffDays(t.start, t.end); // duration - 1
+      let moved = false, preview = null;
+      document.body.classList.add('dragging-gantt');
+      node.classList.add('dragging');
+      tip.style.display = 'block';
+
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX;
+        if (Math.abs(dx) > 3) moved = true;
+        let dd = Math.round(dx / DAY_W);
+        let nl = origLeft, nw = origWidth, ns = t.start, ne = t.end;
+        if (kind === 'move' || kind === 'milestone') {
+          nl = origLeft + dd * DAY_W;
+          ns = Dates.addDays(t.start, dd);
+          ne = kind === 'milestone' ? ns : Dates.addDays(t.end, dd);
+        } else if (kind === 'left') {
+          dd = Math.min(dd, span);             // keep >= 1 day
+          nl = origLeft + dd * DAY_W;
+          nw = origWidth - dd * DAY_W;
+          ns = Dates.addDays(t.start, dd);
+        } else if (kind === 'right') {
+          dd = Math.max(dd, -span);            // keep >= 1 day
+          nw = origWidth + dd * DAY_W;
+          ne = Dates.addDays(t.end, dd);
+        }
+        node.style.left = nl + 'px';
+        if (kind !== 'milestone') node.style.width = Math.max(DAY_W, nw) + 'px';
+        preview = { start: ns, end: ne };
+        tip.textContent = kind === 'milestone' ? Dates.fmt(ns) : `${Dates.fmt(ns)} → ${Dates.fmt(ne)}`;
+        tip.style.left = nl + 'px';
+        tip.style.top = (parseFloat(node.style.top) - 24) + 'px';
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('dragging-gantt');
+        tip.style.display = 'none';
+        node._suppressClick = moved;
+        if (moved && preview && (preview.start !== t.start || preview.end !== t.end)) {
+          store.updateTask(t.id, { start: preview.start, end: preview.end });
+        } else {
+          node.classList.remove('dragging');
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
   rows.forEach((r, i) => {
     if (r.type !== 'task') return;
     const t = r.task;
@@ -178,14 +247,31 @@ export function renderGantt(mount, ctx) {
     const y = i * ROW_H + 6;
     const trade = TRADES[t.trade];
     const isCrit = critical.has(t.id);
+    const open = (node) => () => { if (node._suppressClick) { node._suppressClick = false; return; } ctx.openTask(t.id); };
+
+    // Baseline ghost bar (planned schedule) drawn beneath the live bar.
+    const variance = (ctx.showBaseline && store.baseline) ? taskVariance(t, store.baseline) : null;
+    if (variance) {
+      const bx = xOf(variance.baselineStart);
+      const bw = (Dates.diffDays(variance.baselineStart, variance.baselineEnd) + 1) * DAY_W;
+      barsLayer.appendChild(el('div', {
+        class: 'baseline-bar' + (variance.finishVar > 0 ? ' late' : variance.finishVar < 0 ? ' early' : ''),
+        style: { left: bx + 'px', top: (y + 27) + 'px', width: Math.max(DAY_W, bw) + 'px' },
+        title: `Baseline: ${Dates.fmtLong(variance.baselineStart)} → ${Dates.fmtLong(variance.baselineEnd)}`,
+      }));
+    }
+    const slipNote = variance && variance.finishVar
+      ? `\nBaseline finish: ${Dates.fmtLong(variance.baselineEnd)} (${variance.finishVar > 0 ? '+' : ''}${variance.finishVar}d ${variance.finishVar > 0 ? 'late' : 'early'})`
+      : '';
 
     if (t.milestone) {
       const ms = el('div', {
         class: 'milestone' + (isCrit ? ' critical' : ''),
         style: { left: (x + DAY_W / 2 - 9) + 'px', top: (y) + 'px' },
-        title: `${t.name} — ${Dates.fmtLong(t.start)}`,
-        onclick: () => ctx.openTask(t.id),
+        title: `${t.name} — ${Dates.fmtLong(t.start)} (drag to move)`,
       });
+      ms.addEventListener('click', open(ms));
+      attachDrag(ms, t, 'milestone');
       barsLayer.appendChild(ms);
       barsLayer.appendChild(el('div', { class: 'milestone-label', style: { left: (x + DAY_W) + 'px', top: y + 'px' } }, t.name));
       return;
@@ -197,12 +283,17 @@ export function renderGantt(mount, ctx) {
         left: x + 'px', top: y + 'px', width: Math.max(DAY_W, w) + 'px',
         background: shade(trade.color, 0.55), borderColor: trade.color,
       },
-      title: `${t.name}\n${Dates.fmtLong(t.start)} → ${Dates.fmtLong(t.end)}\n${pct(t.progress)} complete${isCrit ? ' • CRITICAL PATH' : ''}`,
-      onclick: () => ctx.openTask(t.id),
+      title: `${t.name}\n${Dates.fmtLong(t.start)} → ${Dates.fmtLong(t.end)}\n${pct(t.progress)} complete${isCrit ? ' • CRITICAL PATH' : ''}${slipNote}\nDrag to reschedule · drag edges to resize`,
     }, [
       el('div', { class: 'bar-fill', style: { width: t.progress + '%', background: trade.color } }),
       el('span', { class: 'bar-label' }, t.name),
+      el('div', { class: 'bar-handle left' }),
+      el('div', { class: 'bar-handle right' }),
     ]);
+    bar.addEventListener('click', open(bar));
+    attachDrag(bar, t, 'move');
+    attachDrag(bar.querySelector('.bar-handle.left'), t, 'left');
+    attachDrag(bar.querySelector('.bar-handle.right'), t, 'right');
     barsLayer.appendChild(bar);
   });
   chart.appendChild(barsLayer);

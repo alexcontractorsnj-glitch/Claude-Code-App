@@ -1,166 +1,282 @@
 // ============================================================================
-//  data.js — Single source of truth for the BuildFlow ERP Schedule System
-//  Construction-domain model: Projects → Tasks (work packages) with trades,
-//  crews, finish-to-start dependencies, progress, and milestones.
-//  Persisted to LocalStorage so the app is genuinely usable, not a mockup.
+//  data.js — Browser store. Single source of truth for the UI.
+//  Domain model + seed live in seed.js (shared with the Node API server).
+//
+//  Persistence is layered:
+//    • LocalStorage  — always written (offline cache, instant boot).
+//    • REST API      — used when reachable (server is then authoritative).
+//  The store exposes the SAME synchronous interface either way; remote calls
+//  happen optimistically in the background, so views never change.
 // ============================================================================
 
+import {
+  TRADES, STATUSES, STATUS_ORDER, Dates,
+  seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId, SCHEMA_VERSION,
+} from './seed.js';
+import { buildApplication, appsForProject } from './billing.js';
+import { makeDoc } from './docs.js';
+import { makeChangeOrder } from './changeorders.js';
+import { makeReport } from './fieldreports.js';
+import { makePunchItem } from './punch.js';
+
+// Re-export domain constants so existing view imports (`from '../data.js'`) hold.
+export { TRADES, STATUSES, STATUS_ORDER, Dates };
+
 const STORAGE_KEY = 'buildflow.schedule.v1';
+const USER_KEY = 'buildflow.user';
+const API = '/api';
+const API_TIMEOUT = 2500;
+const POLL_MS = 4000;            // how often to check the server for others' edits
 
-// --- Construction trades (drives color + grouping) --------------------------
-export const TRADES = {
-  sitework:    { label: 'Sitework / Excavation', color: '#8d6e63' },
-  foundation:  { label: 'Foundation / Concrete', color: '#607d8b' },
-  structure:   { label: 'Structural / Steel',    color: '#455a64' },
-  framing:     { label: 'Framing',               color: '#ff8f00' },
-  envelope:    { label: 'Envelope / Roofing',    color: '#5d4037' },
-  mep:         { label: 'MEP (Mech/Elec/Plumb)', color: '#1976d2' },
-  finishes:    { label: 'Interior Finishes',     color: '#7b1fa2' },
-  sitefinish:  { label: 'Site / Landscaping',    color: '#388e3c' },
-  inspection:  { label: 'Inspection / Closeout',  color: '#c62828' },
-};
-
-export const STATUSES = {
-  'not-started': { label: 'Not Started', color: '#9e9e9e' },
-  'in-progress': { label: 'In Progress', color: '#1e88e5' },
-  'blocked':     { label: 'Blocked',     color: '#e53935' },
-  'done':        { label: 'Done',        color: '#43a047' },
-};
-
-export const STATUS_ORDER = ['not-started', 'in-progress', 'blocked', 'done'];
-
-// --- Date helpers -----------------------------------------------------------
-export const Dates = {
-  parse: (s) => { const d = new Date(s + 'T00:00:00'); return d; },
-  iso: (d) => {
-    const dt = (d instanceof Date) ? d : new Date(d);
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, '0');
-    const day = String(dt.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  },
-  addDays: (s, n) => {
-    const d = Dates.parse(typeof s === 'string' ? s : Dates.iso(s));
-    d.setDate(d.getDate() + n);
-    return Dates.iso(d);
-  },
-  diffDays: (a, b) => {
-    const d1 = Dates.parse(typeof a === 'string' ? a : Dates.iso(a));
-    const d2 = Dates.parse(typeof b === 'string' ? b : Dates.iso(b));
-    return Math.round((d2 - d1) / 86400000);
-  },
-  today: () => Dates.iso(new Date()),
-  fmt: (s) => {
-    const d = Dates.parse(typeof s === 'string' ? s : Dates.iso(s));
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  },
-  fmtLong: (s) => {
-    const d = Dates.parse(typeof s === 'string' ? s : Dates.iso(s));
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  },
-};
-
-// --- Seed data: a realistic mid-rise commercial build -----------------------
-// Anchored relative to "today" so the Gantt/today-line always look alive.
-function seed() {
-  const t0 = Dates.today();
-  const start = Dates.addDays(t0, -28); // project began 4 weeks ago
-
-  const crews = [
-    { id: 'c1', name: 'Apex Earthworks',     trade: 'sitework',   lead: 'M. Rodriguez' },
-    { id: 'c2', name: 'Ironclad Concrete',   trade: 'foundation', lead: 'D. Okafor' },
-    { id: 'c3', name: 'Summit Steel Erectors', trade: 'structure', lead: 'J. Park' },
-    { id: 'c4', name: 'Timberline Framing',  trade: 'framing',    lead: 'R. Alvarez' },
-    { id: 'c5', name: 'Crown Roofing & Envelope', trade: 'envelope', lead: 'S. Chen' },
-    { id: 'c6', name: 'Volt & Flow MEP',     trade: 'mep',        lead: 'T. Nguyen' },
-    { id: 'c7', name: 'Finishline Interiors', trade: 'finishes',  lead: 'K. Adebayo' },
-    { id: 'c8', name: 'GreenScape Site',     trade: 'sitefinish', lead: 'L. Moreau' },
-  ];
-
-  // Helper to build a task with a start offset (days from project start) + duration
-  let n = 0;
-  const mk = (proj, name, trade, crew, offset, dur, deps, progress, status, milestone = false) => {
-    n += 1;
-    const s = Dates.addDays(start, offset);
-    const e = Dates.addDays(s, Math.max(0, dur - 1));
-    return {
-      id: 't' + n, projectId: proj, name, trade, crewId: crew,
-      start: s, end: e, dependencies: deps, progress,
-      status, milestone, priority: 'normal',
-    };
-  };
-
-  const tasks = [
-    // ---- P1: Riverside Commercial Complex ----
-    mk('p1', 'Mobilization & Site Survey', 'sitework', 'c1', 0, 4, [], 100, 'done'),
-    mk('p1', 'Clear & Grub / Excavation', 'sitework', 'c1', 4, 8, ['t1'], 100, 'done'),
-    mk('p1', 'Underground Utilities', 'mep', 'c6', 12, 6, ['t2'], 100, 'done'),
-    mk('p1', 'Footings & Foundation Pour', 'foundation', 'c2', 12, 10, ['t2'], 80, 'in-progress'),
-    mk('p1', 'Foundation Cure & Strip', 'foundation', 'c2', 22, 5, ['t4'], 20, 'in-progress'),
-    mk('p1', 'Foundation Inspection', 'inspection', null, 27, 1, ['t5'], 0, 'not-started', true),
-    mk('p1', 'Structural Steel Erection', 'structure', 'c3', 28, 14, ['t6'], 0, 'not-started'),
-    mk('p1', 'Metal Decking & Slabs', 'structure', 'c3', 40, 8, ['t7'], 0, 'not-started'),
-    mk('p1', 'Exterior Framing', 'framing', 'c4', 46, 12, ['t8'], 0, 'not-started'),
-    mk('p1', 'Roofing & Envelope Dry-In', 'envelope', 'c5', 56, 10, ['t9'], 0, 'blocked'),
-    mk('p1', 'MEP Rough-In', 'mep', 'c6', 58, 16, ['t9'], 0, 'not-started'),
-    mk('p1', 'Topping Out Milestone', 'structure', null, 48, 1, ['t8'], 0, 'not-started', true),
-    mk('p1', 'Interior Finishes', 'finishes', 'c7', 74, 20, ['t10', 't11'], 0, 'not-started'),
-    mk('p1', 'Final Inspection & TCO', 'inspection', null, 96, 2, ['t13'], 0, 'not-started', true),
-
-    // ---- P2: Northgate Logistics Warehouse ----
-    mk('p2', 'Site Grading & Pad Prep', 'sitework', 'c1', 6, 10, [], 100, 'done'),
-    mk('p2', 'Tilt-Up Panel Casting', 'foundation', 'c2', 16, 12, ['t15'], 60, 'in-progress'),
-    mk('p2', 'Panel Erection', 'structure', 'c3', 28, 8, ['t16'], 0, 'not-started'),
-    mk('p2', 'Roof Joists & Deck', 'envelope', 'c5', 36, 10, ['t17'], 0, 'not-started'),
-    mk('p2', 'Dock Equipment & MEP', 'mep', 'c6', 46, 12, ['t18'], 0, 'not-started'),
-    mk('p2', 'Sitework & Paving', 'sitefinish', 'c8', 58, 14, ['t18'], 0, 'not-started'),
-
-    // ---- P3: Civic Center Renovation ----
-    mk('p3', 'Selective Demolition', 'sitework', 'c1', 2, 8, [], 100, 'done'),
-    mk('p3', 'Structural Reinforcement', 'structure', 'c3', 10, 12, ['t21'], 45, 'in-progress'),
-    mk('p3', 'MEP Upgrade Rough-In', 'mep', 'c6', 20, 15, ['t22'], 10, 'blocked'),
-    mk('p3', 'Interior Buildout', 'finishes', 'c7', 35, 18, ['t23'], 0, 'not-started'),
-    mk('p3', 'Landscaping & Plaza', 'sitefinish', 'c8', 50, 10, ['t24'], 0, 'not-started'),
-  ];
-
-  const projects = [
-    { id: 'p1', name: 'Riverside Commercial Complex', client: 'Riverside Holdings LLC',
-      location: 'Riverside, CA', color: '#1e88e5', budget: 14200000, manager: 'A. Whitfield' },
-    { id: 'p2', name: 'Northgate Logistics Warehouse', client: 'Northgate Distribution',
-      location: 'Reno, NV', color: '#43a047', budget: 8600000, manager: 'P. Sandoval' },
-    { id: 'p3', name: 'Civic Center Renovation', client: 'City of Lakeview',
-      location: 'Lakeview, OR', color: '#fb8c00', budget: 5300000, manager: 'C. Bauer' },
-  ];
-
-  return { projects, tasks, crews, version: 1 };
+// --- Fetch helper: returns { status, data, etag }; throws Error w/ .status --
+async function api(method, path, body, headers = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT);
+  try {
+    const res = await fetch(API + path, {
+      method,
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',     // send the session cookie
+      signal: ctrl.signal,
+    });
+    const etag = res.headers.get('ETag');
+    if (res.status === 304) return { status: 304, data: null, etag };
+    if (!res.ok) {
+      const err = new Error('HTTP ' + res.status);
+      err.status = res.status;
+      try { err.data = await res.json(); } catch { /* ignore */ }
+      throw err;
+    }
+    const data = res.status === 204 ? null : await res.json();
+    return { status: res.status, data, etag };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-// --- Store: load / save / mutate -------------------------------------------
+// Parse a global revision number out of an ETag header (`"7"` → 7).
+function revOf(etag) {
+  if (!etag) return null;
+  const n = parseInt(String(etag).replace(/"/g, ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// --- Store ------------------------------------------------------------------
 class Store {
   constructor() {
     this.listeners = new Set();
-    this.state = this._load();
+    this.statusListeners = new Set();
+    this.noticeListeners = new Set();
+    this.authListeners = new Set();
+    this.mode = 'local';          // 'local' until the API answers
+    this.syncing = false;
+    this.rev = null;              // last global revision seen from the server
+    this._poll = null;
+    this.authState = 'unknown';   // unknown | local | required | authed
+    this.role = null;             // server role when authenticated
+    this.scope = [];              // project scope ([] = all / unrestricted)
+    this.user = this._loadUser(); // display name (local identity, or session user)
+    this.state = normalizeState(this._loadLocal());
+    this._boot();                 // detect auth, then hydrate if allowed
   }
 
-  _load() {
+  // Decide between authenticated-server mode and offline local mode.
+  async _boot() {
+    try {
+      const { data } = await api('GET', '/auth/me');
+      this._applyUser(data.user);
+      this.mode = 'remote';
+      this.authState = 'authed';
+      this._emitAuth();
+      await this._hydrateRemote();
+    } catch (err) {
+      if (err && err.status === 401) {
+        this.mode = 'remote';
+        this.authState = 'required';   // server is there, but we must sign in
+        this._emitAuth();
+      } else {
+        this.mode = 'local';           // no API (file:// or static host) → single-user
+        this.authState = 'local';
+        this._emitAuth();
+      }
+      this._emitStatus();
+    }
+  }
+
+  _applyUser(u) {
+    if (!u) return;
+    this.user = u.name || u.username;
+    this.role = u.role;
+    this.scope = Array.isArray(u.projects) ? u.projects : [];
+  }
+
+  // ---- auth actions ----
+  async login(username, password) {
+    try {
+      const { data } = await api('POST', '/auth/login', { username, password });
+      this._applyUser(data.user);
+      this.mode = 'remote';
+      this.authState = 'authed';
+      this._emitAuth();
+      await this._hydrateRemote();
+      return { ok: true };
+    } catch (err) {
+      const msg = (err && err.data && err.data.error) || 'Sign in failed';
+      return { ok: false, error: msg };
+    }
+  }
+
+  async logout() {
+    try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
+    if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this.role = null;
+    this.authState = 'required';
+    this._emitAuth();
+  }
+
+  // Capability check. Local (no server) mode is single-user → full rights.
+  can(action) {
+    if (this.mode === 'local') return true;
+    if (this.authState !== 'authed') return false;
+    const rank = { viewer: 0, pm: 1, admin: 2 }[this.role] ?? -1;
+    if (action === 'read') return rank >= 0;
+    if (action === 'write') return rank >= 1;
+    if (action === 'admin') return rank >= 2;
+    return false;
+  }
+
+  // Unrestricted = admin or a pm with no project list.
+  isUnrestricted() { return this.mode === 'local' || this.role === 'admin' || (this.can('write') && this.scope.length === 0); }
+  // Per-project write permission (project scoping).
+  canEditProject(projectId) {
+    if (this.mode === 'local') return true;
+    if (!this.can('write')) return false;
+    return this.isUnrestricted() || this.scope.includes(projectId);
+  }
+  // Baseline is schedule-wide → only unrestricted writers.
+  canBaseline() { return this.can('write') && this.isUnrestricted(); }
+  // Projects this user may create tasks in (for the editor's project picker).
+  editableProjects() {
+    return this.isUnrestricted() ? this.state.projects : this.state.projects.filter((p) => this.scope.includes(p.id));
+  }
+
+  // ---- admin: user management + audit (thin API wrappers) ----
+  listUsers() { return api('GET', '/users').then((r) => r.data); }
+  createUser(u) { return api('POST', '/users', u).then((r) => r.data); }
+  updateUser(username, patch) { return api('PATCH', '/users/' + username, patch).then((r) => r.data); }
+  setUserRole(username, role) { return this.updateUser(username, { role }); }
+  deleteUser(username) { return api('DELETE', '/users/' + username).then(() => true); }
+  listAudit(all) { return api('GET', '/audit' + (all ? '?all=1' : '')).then((r) => r.data); }
+  taskHistory(id) { return api('GET', '/tasks/' + id + '/history').then((r) => r.data); }
+
+  // ---- team identity (attribution, not authentication) ----
+  _loadUser() {
+    try { return localStorage.getItem(USER_KEY) || 'Site Office'; }
+    catch { return 'Site Office'; }
+  }
+  setUser(name) {
+    this.user = (name || '').trim() || 'Site Office';
+    try { localStorage.setItem(USER_KEY, this.user); } catch { /* non-fatal */ }
+    this._emitStatus();
+  }
+  _stamp() { return { lastEditedBy: this.user, lastEditedAt: new Date().toISOString() }; }
+
+  // ---- persistence layers ----
+  _loadLocal() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (e) { /* fall through to seed */ }
-    const fresh = seed();
-    this._persist(fresh);
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s && s.tasks) return s;
+      }
+    } catch (e) { /* fall through */ }
+    const fresh = seedState();
+    this._cacheLocal(fresh);
     return fresh;
   }
 
-  _persist(state) {
+  _cacheLocal(state) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch (e) { console.warn('Persist failed', e); }
+    catch (e) { /* private mode / quota — non-fatal */ }
   }
 
-  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  _emit() { this._persist(this.state); this.listeners.forEach((fn) => fn(this.state)); }
+  async _hydrateRemote() {
+    const { data, etag } = await api('GET', '/state');
+    if (data && data.tasks) {
+      this.state = normalizeState(data);
+      this.rev = revOf(etag) ?? data.rev ?? this.rev;
+      this.mode = 'remote';
+      this._cacheLocal(this.state);
+      this.listeners.forEach((fn) => fn(this.state));
+      this._startPolling();
+    }
+    this._emitStatus();
+  }
 
-  // --- selectors ---
+  // Session expired (or revoked) mid-session → bounce to the login screen.
+  _sessionLost() {
+    if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this.role = null;
+    this.authState = 'required';
+    this._setSyncing(false);
+    this._emitAuth();
+  }
+
+  // Poll the server; only re-hydrate when the global rev advances past ours
+  // (i.e. another client wrote). Cheap: 304 Not Modified when nothing changed.
+  _startPolling() {
+    if (this._poll || typeof setInterval !== 'function') return;
+    this._poll = setInterval(async () => {
+      if (this.mode !== 'remote' || this.syncing) return;
+      try {
+        const { status, data, etag } = await api('GET', '/state', null,
+          this.rev != null ? { 'If-None-Match': '"' + this.rev + '"' } : {});
+        if (status === 304) return;
+        const newRev = revOf(etag) ?? (data && data.rev);
+        if (data && data.tasks && newRev !== this.rev) {
+          this.state = normalizeState(data);
+          this.rev = newRev;
+          this._cacheLocal(this.state);
+          this.listeners.forEach((fn) => fn(this.state));
+          this._notify('Schedule updated by another user', 'info');
+        }
+      } catch (e) {
+        if (e && e.status === 401) { this._sessionLost(); return; }
+        this.mode = 'local';
+        this._emitStatus();
+        clearInterval(this._poll); this._poll = null;
+      }
+    }, POLL_MS);
+  }
+
+  // ---- pub/sub ----
+  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  onStatus(fn) { this.statusListeners.add(fn); return () => this.statusListeners.delete(fn); }
+  onNotice(fn) { this.noticeListeners.add(fn); return () => this.noticeListeners.delete(fn); }
+  onAuth(fn) { this.authListeners.add(fn); return () => this.authListeners.delete(fn); }
+  _emit() { this._cacheLocal(this.state); this.listeners.forEach((fn) => fn(this.state)); }
+  _emitStatus() { this.statusListeners.forEach((fn) => fn(this.mode, this.syncing)); }
+  _emitAuth() { this.authListeners.forEach((fn) => fn(this.authState, this.user, this.role)); }
+
+  // Common handling for a failed write: session loss → re-login, forbidden →
+  // notify + reconcile, anything else → fall back to local cache.
+  _writeFailed(err) {
+    this._setSyncing(false);
+    if (err && err.status === 401) { this._sessionLost(); return; }
+    if (err && err.status === 403) {
+      this._notify('Your role doesn’t allow that change — reverting.', 'warn');
+      if (this.authState === 'authed') this._hydrateRemote().catch(() => {});
+      return;
+    }
+    this.mode = 'local';
+    this._emitStatus();
+  }
+  _notify(msg, tone) { this.noticeListeners.forEach((fn) => fn(msg, tone)); }
+
+  _setSyncing(v) { this.syncing = v; this._emitStatus(); }
+
+  // ---- selectors ----
   get projects() { return this.state.projects; }
   get crews() { return this.state.crews; }
   tasks(projectId) {
@@ -171,108 +287,360 @@ class Store {
   task(id) { return this.state.tasks.find((t) => t.id === id); }
   crew(id) { return this.state.crews.find((c) => c.id === id) || null; }
   project(id) { return this.state.projects.find((p) => p.id === id) || null; }
+  get baseline() { return this.state.baseline || null; }
 
-  // --- mutations ---
+  // ---- mutations (optimistic: local first, then sync) ----
+  // Each edit is stamped with the current user + time (attribution). PATCH
+  // carries If-Match with the task's known rev — a 409 means someone else
+  // changed it first → we re-hydrate from the server and tell the user.
   updateTask(id, patch) {
     const t = this.task(id);
     if (!t) return;
-    Object.assign(t, patch);
-    // Keep status & progress coherent
-    if (patch.progress != null) {
-      if (patch.progress >= 100) t.status = 'done';
-      else if (patch.progress > 0 && t.status === 'not-started') t.status = 'in-progress';
-    }
-    if (patch.status === 'done') t.progress = 100;
-    if (patch.status === 'not-started' && t.progress === 100) t.progress = 0;
+    if (!this._guardProject(t.projectId)) return;
+    const baseRev = t.rev || 1;
+    const stamped = { ...patch, ...this._stamp() };
+    applyTaskPatch(t, stamped);
     this._emit();
+    if (this.mode !== 'remote') return;
+    this._setSyncing(true);
+    api('PATCH', '/tasks/' + id, stamped, { 'If-Match': '"' + baseRev + '"' })
+      .then(({ data, etag }) => {
+        const cur = this.task(id);
+        if (cur && data && data.rev != null) cur.rev = data.rev;
+        this.rev = revOf(etag) ?? this.rev;
+        this._setSyncing(false);
+      })
+      .catch((err) => {
+        if (err.status === 409) {
+          this._setSyncing(false);
+          const who = err.data && err.data.current && err.data.current.lastEditedBy;
+          this._notify(`“${t.name}” was just changed by ${who || 'another user'} — reloaded the latest.`, 'warn');
+          this._hydrateRemote().catch(() => {});
+        } else {
+          this._writeFailed(err);
+        }
+      });
   }
 
-  addTask(task) {
-    const id = 't' + (Math.max(0, ...this.state.tasks.map((t) => +t.id.slice(1))) + 1);
-    const full = {
-      id, projectId: task.projectId, name: task.name || 'New Task',
-      trade: task.trade || 'sitework', crewId: task.crewId || null,
-      start: task.start, end: task.end,
-      dependencies: task.dependencies || [], progress: task.progress || 0,
-      status: task.status || 'not-started', milestone: !!task.milestone,
-      priority: task.priority || 'normal',
-    };
+  addTask(partial) {
+    if (!this._guardProject(partial.projectId)) return null;
+    const full = makeTask(this.state.tasks, { ...partial, ...this._stamp() });
     this.state.tasks.push(full);
     this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('POST', '/tasks', full)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
     return full;
   }
 
+  // ---- baseline history (planned vs. actual) ----
+  get baselines() { return this.state.baselines || []; }
+
+  saveBaseline(label) {
+    if (!this.canBaseline()) { this._notify('Saving a baseline requires all-project access.', 'warn'); return; }
+    if (!Array.isArray(this.state.baselines)) this.state.baselines = this.state.baseline ? [this.state.baseline] : [];
+    const snap = {
+      id: nextBaselineId(this.state.baselines),
+      label: (label || '').trim() || ('Baseline ' + (this.state.baselines.length + 1)),
+      savedAt: Dates.today(), savedBy: this.user,
+      tasks: Object.fromEntries(this.state.tasks.map((t) => [t.id, { start: t.start, end: t.end, cost: t.cost || 0 }])),
+    };
+    this.state.baselines.push(snap);
+    this.state.baseline = snap;
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('POST', '/baseline', { label: snap.label })
+        .then(({ data, etag }) => { if (data && data.id) { snap.id = data.id; } this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
+    this._notify(`Baseline “${snap.label}” saved.`, 'info');
+  }
+
+  activateBaseline(id) {
+    if (!this.canBaseline()) { this._notify('Switching baselines requires all-project access.', 'warn'); return; }
+    this.state.baseline = id === 'none' ? null : (this.state.baselines || []).find((b) => b.id === id) || null;
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('POST', '/baseline/' + id + '/activate')
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
+  }
+
+  deleteBaseline(id) {
+    if (!this.canBaseline()) { this._notify('Deleting a baseline requires all-project access.', 'warn'); return; }
+    this.state.baselines = (this.state.baselines || []).filter((b) => b.id !== id);
+    if (this.state.baseline && this.state.baseline.id === id) {
+      this.state.baseline = this.state.baselines[this.state.baselines.length - 1] || null;
+    }
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/baseline/' + id)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
+  }
+
+  clearBaseline() { this.activateBaseline('none'); }
+
+  // ---- billing (schedule of values / payment applications) ----
+  get payApps() { return this.state.payApps || []; }
+
+  async createPayApp(projectId, retainagePct) {
+    if (!this.canEditProject(projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.payApps)) this.state.payApps = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/billing', { projectId, retainagePct });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.payApps.push(data); this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const project = this.project(projectId);
+    const prior = appsForProject(this.state.payApps, projectId);
+    const app = buildApplication(project, this.state.tasks, {
+      number: prior.length + 1, retainagePct: Math.min(50, Math.max(0, +retainagePct || 0)),
+      periodTo: Dates.today(), createdBy: this.user, createdAt: new Date().toISOString(),
+    }, prior[prior.length - 1]);
+    app.id = 'pa' + (Math.max(0, ...this.state.payApps.map((a) => +String(a.id).slice(2) || 0)) + 1);
+    this.state.payApps.push(app); this._emit();
+    return app;
+  }
+
+  deletePayApp(id) {
+    const app = this.payApps.find((a) => a.id === id);
+    if (app && !this._guardProject(app.projectId)) return;
+    this.state.payApps = this.payApps.filter((a) => a.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/billing/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- documents (submittals & RFIs) ----
+  get docs() { return this.state.docs || []; }
+
+  async createDoc(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.docs)) this.state.docs = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/docs', partial);
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.docs.push(data); this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const doc = makeDoc(this.state.docs, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.docs.push(doc); this._emit();
+    return doc;
+  }
+
+  updateDoc(id, patch) {
+    const doc = this.docs.find((d) => d.id === id);
+    if (!doc) return;
+    if (!this._guardProject(doc.projectId)) return;
+    Object.assign(doc, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/docs/' + id, patch).then(({ data, etag }) => {
+        if (data && data.rev != null) doc.rev = data.rev;
+        this.rev = revOf(etag) ?? this.rev; this._setSyncing(false);
+      }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteDoc(id) {
+    const doc = this.docs.find((d) => d.id === id);
+    if (doc && !this._guardProject(doc.projectId)) return;
+    this.state.docs = this.docs.filter((d) => d.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/docs/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- change orders ----
+  get changeOrders() { return this.state.changeOrders || []; }
+
+  async createChangeOrder(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.changeOrders)) this.state.changeOrders = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/changeorders', partial); this.rev = revOf(etag) ?? this.rev; this.state.changeOrders.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const co = makeChangeOrder(this.state.changeOrders, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    if (co.status === 'approved') { co.approvedBy = this.user; co.approvedAt = new Date().toISOString(); }
+    this.state.changeOrders.push(co); this._emit(); return co;
+  }
+
+  updateChangeOrder(id, patch) {
+    const co = this.changeOrders.find((c) => c.id === id);
+    if (!co || !this._guardProject(co.projectId)) return;
+    const wasApproved = co.status === 'approved';
+    Object.assign(co, patch);
+    if (co.status === 'approved' && !wasApproved) { co.approvedBy = this.user; co.approvedAt = new Date().toISOString(); }
+    if (co.status !== 'approved') { co.approvedBy = null; co.approvedAt = null; }
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/changeorders/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) co.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteChangeOrder(id) {
+    const co = this.changeOrders.find((c) => c.id === id);
+    if (co && !this._guardProject(co.projectId)) return;
+    this.state.changeOrders = this.changeOrders.filter((c) => c.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/changeorders/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- daily field reports ----
+  get reports() { return this.state.reports || []; }
+
+  async createReport(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.reports)) this.state.reports = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/reports', partial); this.rev = revOf(etag) ?? this.rev; this.state.reports.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const r = makeReport(this.state.reports, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.reports.push(r); this._emit(); return r;
+  }
+
+  updateReport(id, patch) {
+    const r = this.reports.find((x) => x.id === id);
+    if (!r || !this._guardProject(r.projectId)) return;
+    Object.assign(r, patch);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/reports/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) r.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deleteReport(id) {
+    const r = this.reports.find((x) => x.id === id);
+    if (r && !this._guardProject(r.projectId)) return;
+    this.state.reports = this.reports.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/reports/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- punch list / closeout ----
+  get punch() { return this.state.punch || []; }
+
+  async createPunch(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.punch)) this.state.punch = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/punch', partial); this.rev = revOf(etag) ?? this.rev; this.state.punch.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const p = makePunchItem(this.state.punch, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.punch.push(p); this._emit(); return p;
+  }
+
+  updatePunch(id, patch) {
+    const p = this.punch.find((x) => x.id === id);
+    if (!p || !this._guardProject(p.projectId)) return;
+    Object.assign(p, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/punch/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) p.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  deletePunch(id) {
+    const p = this.punch.find((x) => x.id === id);
+    if (p && !this._guardProject(p.projectId)) return;
+    this.state.punch = this.punch.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/punch/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
   deleteTask(id) {
+    const target = this.task(id);
+    if (target && !this._guardProject(target.projectId)) return;
     this.state.tasks = this.state.tasks.filter((t) => t.id !== id);
-    // strip dangling dependencies
     this.state.tasks.forEach((t) => {
       t.dependencies = t.dependencies.filter((d) => d !== id);
     });
     this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/tasks/' + id)
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); })
+        .catch((err) => this._writeFailed(err));
+    }
   }
 
-  reset() {
-    this.state = seed();
+  // Client-side permission gates (defence in depth; the server also enforces).
+  _guardWrite() {
+    if (this.can('write')) return true;
+    this._notify('You have read-only access — that change was blocked.', 'warn');
+    return false;
+  }
+  _guardProject(projectId) {
+    if (this.canEditProject(projectId)) return true;
+    const p = this.project(projectId);
+    this._notify(`You don’t have access to ${p ? p.name : 'that project'} — change blocked.`, 'warn');
+    return false;
+  }
+
+  async reset() {
+    if (this.mode === 'remote') {
+      if (!this.can('admin')) { this._notify('Only an admin can reset the schedule.', 'warn'); return; }
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/reset');
+        if (data && data.tasks) {
+          this.state = normalizeState(data);
+          this.rev = revOf(etag) ?? data.rev ?? this.rev;
+          this._emit();
+          return;
+        }
+      } catch (e) { this._writeFailed(e); }
+      finally { this._setSyncing(false); }
+    }
+    this.state = seedState();
     this._emit();
   }
 }
 
 export const store = new Store();
+export { SCHEMA_VERSION };
 
-// ============================================================================
-//  Critical Path Method (CPM) — forward/backward pass over the dependency DAG.
-//  Returns a Set of task ids that lie on the critical path (zero total float).
-// ============================================================================
-export function computeCriticalPath(tasks) {
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  const dur = (t) => Math.max(1, Dates.diffDays(t.start, t.end) + 1);
-
-  // Topological order
-  const indeg = new Map(tasks.map((t) => [t.id, 0]));
-  tasks.forEach((t) => t.dependencies.forEach((d) => {
-    if (byId.has(d)) indeg.set(t.id, (indeg.get(t.id) || 0) + 1);
-  }));
-  const queue = tasks.filter((t) => indeg.get(t.id) === 0).map((t) => t.id);
-  const order = [];
-  const succ = new Map(tasks.map((t) => [t.id, []]));
-  tasks.forEach((t) => t.dependencies.forEach((d) => {
-    if (byId.has(d)) succ.get(d).push(t.id);
-  }));
-  const indegW = new Map(indeg);
-  while (queue.length) {
-    const id = queue.shift();
-    order.push(id);
-    succ.get(id).forEach((s) => {
-      indegW.set(s, indegW.get(s) - 1);
-      if (indegW.get(s) === 0) queue.push(s);
-    });
-  }
-
-  // Forward pass: earliest start/finish (in "project days")
-  const ES = new Map(), EF = new Map();
-  order.forEach((id) => {
-    const t = byId.get(id);
-    const deps = t.dependencies.filter((d) => byId.has(d));
-    const es = deps.length ? Math.max(...deps.map((d) => EF.get(d))) : 0;
-    ES.set(id, es);
-    EF.set(id, es + dur(t));
-  });
-  const projectEnd = Math.max(0, ...[...EF.values()]);
-
-  // Backward pass: latest start/finish
-  const LS = new Map(), LF = new Map();
-  [...order].reverse().forEach((id) => {
-    const t = byId.get(id);
-    const sc = succ.get(id);
-    const lf = sc.length ? Math.min(...sc.map((s) => LS.get(s))) : projectEnd;
-    LF.set(id, lf);
-    LS.set(id, lf - dur(t));
-  });
-
-  // Critical = zero total float
-  const critical = new Set();
-  order.forEach((id) => {
-    if (Math.abs((LS.get(id) || 0) - (ES.get(id) || 0)) < 0.5) critical.add(id);
-  });
-  return critical;
-}
+// CPM lives in its own pure module (shared with leveling.js); re-export so
+// existing consumers can keep importing it from data.js.
+export { computeCriticalPath } from './cpm.js';
