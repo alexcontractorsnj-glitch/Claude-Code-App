@@ -24,10 +24,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # NOTE: Pages must be enabled once at Settings -> Pages ->
+      # Build and deployment -> Source: "GitHub Actions". The Actions token
+      # cannot create the Pages site via API, so this step only reads it.
       - name: Configure Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       # The app is a static frontend (index.html + src/) served from the repo
       # root; it degrades to local mode without the Node /api backend.
