@@ -14,6 +14,7 @@ import { renderBilling } from './views/billing.js';
 import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
+import { renderTestimonials } from './views/testimonials.js';
 import { DOC_KINDS } from './docs.js';
 import { CO_STATUSES } from './changeorders.js';
 import { WEATHER } from './fieldreports.js';
@@ -63,6 +64,7 @@ const VIEWS = {
   documents: { label: 'Documents', icon: '✉', render: renderDocuments },
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
+  testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
 };
 
 let viewMount; // the area where the active view renders
@@ -70,8 +72,15 @@ let viewMount; // the area where the active view renders
 // --------------------------------------------------------------------------
 function renderActiveView() {
   if (!built || !viewMount || !viewMount.isConnected) return;
+  // Testimonials is a standalone marketing surface — hide the schedule chrome
+  // (KPI bar + filter toolbar) so the carousel stands on its own.
+  const chromeless = ctx.view === 'testimonials';
+  const kpiBar = document.getElementById('kpis');
+  if (kpiBar) kpiBar.style.display = chromeless ? 'none' : '';
+  const tb = document.querySelector('.toolbar');
+  if (tb) tb.style.display = chromeless ? 'none' : '';
   VIEWS[ctx.view].render(viewMount, ctx);
-  renderKpis();
+  if (!chromeless) renderKpis();
 }
 
 // --- KPI summary bar --------------------------------------------------------
