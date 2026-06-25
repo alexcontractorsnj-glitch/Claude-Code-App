@@ -203,6 +203,30 @@ module imports resolve.)
 The footer shows a live pill: **Synced to server** when the REST API is reachable,
 **Local cache** otherwise.
 
+## Deploy the live server (one click)
+
+The server-backed features — login, persistent messaging, the AI dispatcher,
+SSE real-time, calls + recaps — need `server.mjs` running somewhere. The fastest
+host is **Render** (free plan, no card): the repo ships a `render.yaml` blueprint,
+so it's one click + a Render sign-in.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/alexcontractorsnj-glitch/Claude-Code-App/tree/claude/corefield-mobile-app-e1pkel)
+
+1. Click the button → sign into Render → **Apply** (it reads `render.yaml` and
+   provisions a `node server.mjs` web service). You get a live `https://…onrender.com`
+   URL in ~1–2 minutes.
+2. *(Optional, recommended)* In the service's **Environment** tab set
+   `ANTHROPIC_API_KEY` to switch the dispatcher + call recaps from the rule-based
+   fallback to the live Claude agent. It's marked `sync: false`, so it never lives
+   in git.
+3. Open the URL on your phone and **Add to Home Screen** — Corefield is at
+   `…onrender.com/mobile/`.
+
+> The free plan's disk is **ephemeral**: `data/` (schedule, users, messages,
+> photos) resets on each deploy/restart — fine for a live pilot. Add a paid
+> **Persistent Disk** mounted at `./data` for durable storage. The instance also
+> sleeps after inactivity and wakes on the next request (first hit is slow).
+
 ## Tests
 
 Zero-dependency, so the suite runs on stock Node:
