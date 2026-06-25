@@ -273,3 +273,7 @@ textarea.cf-input { resize: vertical; }
 .cf-rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-dim); margin-right: auto; }
 .cf-rec-cancel { flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text-dim); font-size: 16px; }
 @keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* ---- Dispatcher (bot) bubbles ---- */
+.cf-bubble.bot { background: rgba(139,92,246,.14); border-color: rgba(139,92,246,.35); border-top-left-radius: 4px; }
+.cf-bubble.bot .cf-bubble-author { color: #b794f6; }

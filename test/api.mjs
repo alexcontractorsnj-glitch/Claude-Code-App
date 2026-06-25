@@ -114,6 +114,31 @@ try {
   ok((await http('POST', '/api/voice', { mime: 'audio/webm', data: b64, dur: 5 })).status === 403, 'viewer cannot upload voice → 403');
   await login('admin', 'admin123');
 
+  // --- deliveries ---
+  const del = await http('POST', '/api/deliveries', { projectId: 'p1', item: 'Anchor bolts', supplier: 'Hilti', due: '2026-01-01' });
+  ok(del.status === 201 && del.data.id && del.data.status === 'scheduled', 'create delivery');
+  ok((await http('PATCH', '/api/deliveries/' + del.data.id, { status: 'delivered' })).data.status === 'delivered', 'update delivery status');
+  await login('awhitfield', 'build123');
+  ok((await http('POST', '/api/deliveries', { projectId: 'p2', item: 'x' })).status === 403, 'scoped PM delivery other project → 403');
+  await login('admin', 'admin123');
+  ok((await http('DELETE', '/api/deliveries/' + del.data.id)).status === 204, 'delete delivery');
+
+  // --- AI dispatcher (no key in test env → rule-based fallback) ---
+  const scan = await http('POST', '/api/dispatcher/scan');
+  ok(scan.status === 200 && scan.data.posted > 0, 'dispatcher scan posts proactive alerts');
+  ok((await http('GET', '/api/state')).data.messages.some((m) => m.authorId === 'dispatcher'), 'dispatcher alert appears in a channel');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'dispatcher.alert'), 'dispatcher alert audited');
+  let guard = 0;                                          // scan caps posts/run → drain the rest
+  while ((await http('POST', '/api/dispatcher/scan')).data.posted > 0 && guard++ < 12) { /* drain */ }
+  ok(guard < 12, 'dispatcher drains its backlog');
+  ok((await http('POST', '/api/dispatcher/scan')).data.posted === 0, 'dispatcher dedupes — nothing new after drain');
+  // @dispatcher mention → async reply (fallback digest when no key)
+  const before = (await http('GET', '/api/state')).data.messages.filter((m) => m.authorId === 'dispatcher').length;
+  await http('POST', '/api/messages', { channelId: 'ch-p1', body: '@dispatcher what is the status?' });
+  await new Promise((r) => setTimeout(r, 500));
+  const after = (await http('GET', '/api/state')).data.messages.filter((m) => m.authorId === 'dispatcher').length;
+  ok(after > before, '@dispatcher mention triggers a reply');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

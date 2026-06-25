@@ -22,6 +22,7 @@ import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
   messagesForChannel, lastMessage, channelIdForProject,
 } from './messaging.js';
+import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -686,6 +687,45 @@ class Store {
         .catch(() => { /* read receipts are best-effort */ });
     }
   }
+
+  // ---- deliveries (what the dispatcher watches) ----
+  get deliveries() { return this.state.deliveries || []; }
+  deliveriesFor(projectId) { return deliveriesFor(this.deliveries, projectId); }
+  deliverySummary(projectId) { return deliverySummary(this.deliveries, projectId); }
+
+  async createDelivery(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.deliveries)) this.state.deliveries = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/deliveries', partial); this.rev = revOf(etag) ?? this.rev; this.state.deliveries.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const d = makeDelivery(this.state.deliveries, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.deliveries.push(d); this._emit(); return d;
+  }
+  updateDelivery(id, patch) {
+    const d = this.deliveries.find((x) => x.id === id);
+    if (!d || !this._guardProject(d.projectId)) return;
+    Object.assign(d, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/deliveries/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) d.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+  deleteDelivery(id) {
+    const d = this.deliveries.find((x) => x.id === id);
+    if (d && !this._guardProject(d.projectId)) return;
+    this.state.deliveries = this.deliveries.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/deliveries/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+  // Trigger a proactive dispatcher scan (admin/PM); returns #posted.
+  scanDispatcher() { return api('POST', '/dispatcher/scan').then((r) => (r.data && r.data.posted) || 0).catch(() => 0); }
 
   deleteTask(id) {
     const target = this.task(id);

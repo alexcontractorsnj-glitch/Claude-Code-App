@@ -182,5 +182,25 @@ const vmsg = makeMessage([], { channelId: ch1, body: '', voice: { id: 'v1', dur:
 ok(vmsg.voice && vmsg.voice.id === 'v1' && vmsg.voice.dur === 7, 'message carries a voice ref');
 ok(makeMessage([], { channelId: ch1, body: 'hi' }).voice === null, 'non-voice message has null voice');
 
+section('deliveries + dispatcher');
+const { makeDelivery, deliveryRisk, deliverySummary, deliveriesFor } = await import('../src/js/deliveries.js');
+const { analyzeField, fallbackBrief, mentionsDispatcher, DISPATCHER } = await import('../src/js/dispatcher.js');
+ok(seed.deliveries.length === 6 && seed.deliveries.every((d) => d.id && d.due), 'seed has 6 deliveries');
+ok(makeDelivery([], { projectId: 'p1', status: 'bogus' }).status === 'scheduled', 'delivery invalid status → default');
+ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), -3) }).late === true, 'deliveryRisk late');
+ok(deliveryRisk({ status: 'delayed', due: Dates.addDays(Dates.today(), 5) }).late === true, 'delayed status counts as late');
+ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), 1) }).dueSoon === true, 'deliveryRisk due soon');
+ok(deliveryRisk({ status: 'delivered', due: '2020-01-01' }).late === false, 'delivered never late');
+const dsum = deliverySummary(seed.deliveries, 'all');
+ok(dsum.late >= 2 && dsum.total === 6, 'deliverySummary counts late');
+const findings = analyzeField(seed);
+ok(findings.some((f) => f.kind === 'delivery-late' && f.channelId === channelIdForProject('p1')), 'dispatcher flags late delivery → project channel');
+ok(findings.every((f) => f.key && f.channelId && f.severity), 'findings carry key/channel/severity');
+ok(findings.length === new Set(findings.map((f) => f.key)).size, 'finding keys are unique (dedupe-able)');
+const brief = fallbackBrief(seed, 'p1');
+ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a digest');
+ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
+ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
+
 console.log(`\n${fail === 0 ? '✓' : '✗'} units: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

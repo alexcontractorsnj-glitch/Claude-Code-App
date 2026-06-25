@@ -88,6 +88,37 @@ Messages ride the existing `/api/state` + ETag polling for live delivery (a
 push **SSE** stream is the documented next step). On the static GitHub Pages
 demo, chat runs in local mode on the seeded channels.
 
+## 🤖 AI Dispatcher
+
+The **Dispatcher** is an AI agent that watches the field and acts on it. It posts
+as a participant in the team channels (purple 🤖 bubbles), so crews and PMs
+interact with it right where they already talk.
+
+- **Proactive monitoring:** scans the schedule + deliveries and posts **new**
+  findings into the relevant project channel — late/at-risk **deliveries**,
+  overdue & blocked tasks, slipping **milestones**, overdue RFIs, high-priority
+  punch items. It dedupes (never repeats a finding) and runs on a timer, or on
+  demand via **⚡ Scan now** in the Deliveries view (`POST /api/dispatcher/scan`).
+- **Conversational + action-taking:** `@dispatcher` in any channel and it
+  replies. With a Claude API key it runs a **tool-use agent** that can read
+  status and take **real, audited actions** — reschedule a task, change a task
+  status, update a delivery, or open a punch item — attributed to the dispatcher
+  on behalf of the asker.
+- **Deliveries** are a first-class entity (`src/js/deliveries.js`): item,
+  supplier, due date, status, and the task they feed. Managed from the
+  **🚚 Deliveries** view; the dispatcher's late/due-soon logic runs off them.
+
+**Wiring the key (optional but recommended):** copy `.env.example` to `.env` and
+set `ANTHROPIC_API_KEY` (the server auto-loads `.env`, which is gitignored).
+**Without a key the dispatcher still works** — it falls back to a deterministic
+rule-based field digest (and tells you the AI is offline). `DISPATCHER_MODEL`
+overrides the model. The brain is pure + tested (`src/js/dispatcher.js`); the
+server (`server.mjs`) owns the side-effects (posting, tool execution, the Claude
+Messages-API loop).
+
+> Like the rest of the app, the dispatcher needs the Node server — it's off on
+> the static GitHub Pages demo (no server, no key).
+
 ## Run it
 
 No build step, no `npm install` — pure ES modules + a zero-dependency Node server.

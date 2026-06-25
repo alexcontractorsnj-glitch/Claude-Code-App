@@ -24,6 +24,8 @@ import { makeChangeOrder, CO_STATUSES } from './src/js/changeorders.js';
 import { makeReport } from './src/js/fieldreports.js';
 import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
 import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
+import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
+import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -156,6 +158,129 @@ function persist(file, next) {
 }
 const persistState = () => persist(DATA_FILE, state);
 const persistUsers = () => persist(AUTH_FILE, users);
+
+// --- AI Dispatcher ----------------------------------------------------------
+// Posts as a synthetic "Dispatcher" user; bypasses project scope (it's the
+// system). Proactive scan turns findings into channel messages (deduped via
+// state.dispatcher.posted). On @mention it runs a Claude tool-use agent that
+// can take real, audited actions — falling back to a rule-based digest when no
+// ANTHROPIC_API_KEY is configured.
+const DISPATCHER_ACTOR = { name: DISPATCHER.name, role: 'system' };
+
+function postDispatcher(channel, text, kind) {
+  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, createdAt: new Date().toISOString() });
+  state.messages.push(msg);
+  state.messages = capChannel(state.messages, channel.id);
+  bump();
+  persistState();
+  logAudit(DISPATCHER_ACTOR, kind === 'reply' ? 'dispatcher.reply' : 'dispatcher.alert', { targetId: msg.id, targetName: channel.name, projectId: channel.projectId, detail: text.slice(0, 80) });
+  return msg;
+}
+
+function runDispatcherScan() {
+  if (!state.dispatcher) state.dispatcher = { posted: {} };
+  const posted = state.dispatcher.posted || (state.dispatcher.posted = {});
+  let n = 0;
+  for (const f of analyzeField(state)) {
+    if (f.severity === 'low' || posted[f.key]) continue;
+    const channel = (state.channels || []).find((c) => c.id === f.channelId);
+    if (!channel) continue;
+    postDispatcher(channel, f.text, 'alert');
+    posted[f.key] = new Date().toISOString();
+    if (++n >= 6) break;                              // don't flood a single scan
+  }
+  if (n) persistState();
+  return n;
+}
+
+async function callClaude(system, messages) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const model = process.env.DISPATCHER_MODEL || 'claude-opus-4-8';
+  try {
+    const res = await fetch((process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com') + '/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, max_tokens: 1024, system, tools: DISPATCHER_TOOLS, messages }),
+    });
+    if (!res.ok) { console.error('dispatcher: Claude HTTP', res.status, (await res.text()).slice(0, 200)); return null; }
+    return await res.json();
+  } catch (e) { console.error('dispatcher: Claude error', e.message); return null; }
+}
+
+function execDispatcherTool(name, input, actor) {
+  const by = actor ? '@' + actor.username : 'dispatcher';
+  try {
+    if (name === 'get_field_status') {
+      const pid = input.projectId || 'all';
+      const tasks = (state.tasks || []).filter((t) => pid === 'all' || t.projectId === pid);
+      return {
+        project: pid, today: new Date().toISOString().slice(0, 10),
+        deliveries: deliverySummary(state.deliveries, pid),
+        openTasks: tasks.filter((t) => t.status !== 'done' && !t.milestone).length,
+        blocked: tasks.filter((t) => t.status === 'blocked').length,
+        findings: analyzeField(state).filter((f) => pid === 'all' || f.projectId === pid).map((f) => ({ severity: f.severity, text: f.text })),
+      };
+    }
+    if (name === 'reschedule_task') {
+      const t = (state.tasks || []).find((x) => x.id === input.taskId);
+      if (!t) return { ok: false, error: 'task not found' };
+      const patch = {}; if (input.start) patch.start = input.start; if (input.end) patch.end = input.end;
+      applyTaskPatch(t, patch); t.lastEditedBy = DISPATCHER.name; t.lastEditedAt = new Date().toISOString(); t.rev = (t.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: t.id, targetName: t.name, projectId: t.projectId, detail: `reschedule (${by}): ${JSON.stringify(patch)}` });
+      return { ok: true, task: t.id, start: t.start, end: t.end };
+    }
+    if (name === 'set_task_status') {
+      const t = (state.tasks || []).find((x) => x.id === input.taskId);
+      if (!t) return { ok: false, error: 'task not found' };
+      applyTaskPatch(t, { status: input.status }); t.lastEditedBy = DISPATCHER.name; t.rev = (t.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: t.id, targetName: t.name, projectId: t.projectId, detail: `status ${t.status} (${by})` });
+      return { ok: true, task: t.id, status: t.status, progress: t.progress };
+    }
+    if (name === 'update_delivery') {
+      const d = (state.deliveries || []).find((x) => x.id === input.deliveryId);
+      if (!d) return { ok: false, error: 'delivery not found' };
+      if (input.status && DELIVERY_STATUSES.includes(input.status)) d.status = input.status;
+      if (input.due) d.due = input.due;
+      d.updatedBy = DISPATCHER.name; d.updatedAt = new Date().toISOString(); d.rev = (d.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: d.id, targetName: d.item, projectId: d.projectId, detail: `delivery ${d.status} due ${d.due} (${by})` });
+      return { ok: true, delivery: d.id, status: d.status, due: d.due };
+    }
+    if (name === 'create_punch_item') {
+      if (!Array.isArray(state.punch)) state.punch = [];
+      const p = makePunchItem(state.punch, { projectId: input.projectId, title: input.title, location: input.location, priority: input.priority, createdBy: DISPATCHER.name, createdAt: new Date().toISOString() });
+      state.punch.push(p); bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId, detail: `punch via ${by}` });
+      return { ok: true, punch: p.id, number: p.number };
+    }
+    return { ok: false, error: 'unknown tool' };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+async function dispatcherReply(channel, actor) {
+  // No key → deterministic field digest.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return postDispatcher(channel, fallbackBrief(state, channel.projectId) + '\n\n_(AI offline — set ANTHROPIC_API_KEY for the full assistant.)_', 'reply');
+  }
+  const recent = state.messages.filter((m) => m.channelId === channel.id).slice(-8).map((m) => `${m.authorName}: ${m.body}`).join('\n');
+  const system = dispatcherSystem(state, actor && actor.name);
+  const messages = [{ role: 'user', content: `Recent conversation in channel "${channel.name}" (project ${channel.projectId}):\n${recent}\n\nThe latest message mentions you (@dispatcher). Respond as the Dispatcher — check status first, take any clearly-requested actions, and reply concisely.` }];
+  let text = null;
+  try {
+    for (let step = 0; step < 6; step++) {
+      const resp = await callClaude(system, messages);
+      if (!resp || !Array.isArray(resp.content)) break;
+      messages.push({ role: 'assistant', content: resp.content });
+      const toolUses = resp.content.filter((b) => b.type === 'tool_use');
+      if (!toolUses.length) { text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim(); break; }
+      messages.push({ role: 'user', content: toolUses.map((tu) => ({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(execDispatcherTool(tu.name, tu.input, actor)) })) });
+    }
+  } catch (e) { console.error('dispatcher: agent', e.message); }
+  return postDispatcher(channel, text || fallbackBrief(state, channel.projectId), 'reply');
+}
 
 // --- HTTP helpers -----------------------------------------------------------
 function send(res, code, payload, headers = {}) {
@@ -581,6 +706,8 @@ async function handleApi(req, res, urlPath) {
         state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
         bump(); await persistState();
         logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.body.slice(0, 80) });
+        // @dispatcher → the AI replies asynchronously (posts a follow-up message).
+        if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor).catch((e) => console.error('dispatcher', e));
         return send(res, 201, msg, { ETag: etag() });
       }
     }
@@ -592,6 +719,45 @@ async function handleApi(req, res, urlPath) {
       state.reads = setRead(state.reads, actor.username, ch.id, body.at || new Date().toISOString());
       bump(); await persistState();
       return send(res, 200, { channelId: ch.id, at: state.reads[actor.username][ch.id] }, { ETag: etag() });
+    }
+
+    if (resource === 'deliveries') {
+      if (!Array.isArray(state.deliveries)) state.deliveries = [];
+      if (method === 'POST' && !id) {
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const d = makeDelivery(state.deliveries, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.deliveries.push(d);
+        bump(); await persistState();
+        logAudit(actor, 'delivery.create', { targetId: d.id, targetName: d.item, projectId: d.projectId });
+        return send(res, 201, d, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const d = state.deliveries.find((x) => x.id === id);
+        if (!d) return send(res, 404, { error: 'delivery not found' });
+        if (!canEditProject(actor, d.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['item', 'supplier', 'qty', 'due', 'status', 'taskId', 'notes'].forEach((k) => { if (body[k] !== undefined) d[k] = body[k]; });
+        if (!DELIVERY_STATUSES.includes(d.status)) d.status = 'scheduled';
+        d.updatedBy = actor.name; d.updatedAt = new Date().toISOString(); d.rev = (d.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'delivery.update', { targetId: d.id, targetName: d.item, projectId: d.projectId, detail: `${d.status} due ${d.due}` });
+        return send(res, 200, d, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const d = state.deliveries.find((x) => x.id === id);
+        if (!d) return send(res, 404, { error: 'delivery not found' });
+        if (!canEditProject(actor, d.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.deliveries = state.deliveries.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'delivery.delete', { targetName: d.item, projectId: d.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'dispatcher' && method === 'POST' && id === 'scan') {
+      const n = runDispatcherScan();
+      return send(res, 200, { posted: n }, { ETag: etag() });
     }
 
     if (resource === 'tasks') {
@@ -688,5 +854,14 @@ server.listen(PORT, () => {
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);
   console.log(`  Auth                    →  sign in required · demo: admin/admin123 (admin),`);
   console.log(`                              awhitfield/build123 (PM·Riverside), psandoval/north123 (PM·Northgate+Civic), viewer/view123`);
+  console.log(`  Dispatcher              →  ${process.env.ANTHROPIC_API_KEY ? 'Claude agent ON' : 'rule-based (set ANTHROPIC_API_KEY for AI)'}\n`);
   console.log(`  Persisting to           →  ${path.relative(ROOT, DATA_FILE)} + auth.json + audit.json\n`);
 });
+
+// Proactive monitoring: scan the field every few minutes and post NEW findings
+// into the relevant project channels (deduped, so it never repeats itself).
+const DISPATCH_INTERVAL = +process.env.DISPATCHER_SCAN_MS || 300000;   // 5 min
+if (typeof setInterval === 'function') {
+  const timer = setInterval(() => { try { runDispatcherScan(); } catch (e) { console.error('dispatcher scan', e.message); } }, DISPATCH_INTERVAL);
+  if (timer.unref) timer.unref();
+}

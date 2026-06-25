@@ -14,6 +14,7 @@ import { renderBilling } from './views/billing.js';
 import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
+import { renderDeliveries } from './views/deliveries.js';
 import { renderMessages } from './views/messages.js';
 import { renderTestimonials } from './views/testimonials.js';
 import { DOC_KINDS } from './docs.js';
@@ -65,6 +66,7 @@ const VIEWS = {
   documents: { label: 'Documents', icon: '✉', render: renderDocuments },
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
+  deliveries: { label: 'Deliveries', icon: '🚚', render: renderDeliveries },
   messages: { label: 'Messages', icon: '💬', render: renderMessages },
   testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
 };

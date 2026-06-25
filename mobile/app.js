@@ -417,8 +417,9 @@ function renderConversation(main, channelId) {
     const day = msgDay(m.createdAt);
     if (day !== lastDay) { stream.appendChild(el('div', { class: 'cf-chat-day' }, day)); lastDay = day; }
     const mine = m.authorId === store._uid();
+    const bot = m.authorId === 'dispatcher';
     stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
-      el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (m._provisional ? ' pending' : '') }, [
+      el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
         mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
         m.body ? el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)) : null,
         m.voice ? el('div', { class: 'cf-bubble-voice' }, [

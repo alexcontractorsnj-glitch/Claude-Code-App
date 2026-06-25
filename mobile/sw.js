@@ -21,6 +21,7 @@ const SHELL = [
   '../src/js/punch.js',
   '../src/js/fieldreports.js',
   '../src/js/messaging.js',
+  '../src/js/deliveries.js',
   '../src/js/voice.js',
 ];
 

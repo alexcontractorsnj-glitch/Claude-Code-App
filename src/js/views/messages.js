@@ -139,8 +139,9 @@ export function renderMessages(mount, ctx) {
       const day = dayOf(m.createdAt);
       if (day !== lastDay) { stream.appendChild(el('div', { class: 'msg-daysep' }, day)); lastDay = day; }
       const mine = m.authorId === store._uid();
-      stream.appendChild(el('div', { class: 'msg-row' + (mine ? ' mine' : '') }, [
-        el('span', { class: 'msg-avatar' }, initials(m.authorName)),
+      const bot = m.authorId === 'dispatcher';
+      stream.appendChild(el('div', { class: 'msg-row' + (mine ? ' mine' : '') + (bot ? ' bot' : '') }, [
+        el('span', { class: 'msg-avatar' + (bot ? ' bot' : '') }, bot ? '🤖' : initials(m.authorName)),
         el('div', { class: 'msg-bubble-wrap' }, [
           el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, timeOf(m.createdAt))]),
           m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,

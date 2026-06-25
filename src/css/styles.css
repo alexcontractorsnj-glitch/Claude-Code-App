@@ -707,3 +707,28 @@ textarea.input { resize: vertical; font-family: inherit; }
 .msg-rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: recpulse 1s ease-in-out infinite; }
 .msg-rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--red); margin-right: auto; }
 @keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* ---- Deliveries ---- */
+.dl-add { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; align-items: center; }
+.dl-add .input, .dl-add .select { flex: 1; min-width: 120px; }
+.dl-list { display: flex; flex-direction: column; gap: 6px; }
+.dl-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 8px; }
+.dl-row.late { border-left-color: var(--red); }
+.dl-row.soon { border-left-color: var(--accent); }
+.dl-main { min-width: 0; }
+.dl-item { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }
+.dl-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.dl-flag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
+.dl-flag.bad { color: var(--red); background: rgba(255,77,79,.14); }
+.dl-flag.warn { color: var(--accent-2); background: rgba(245,166,35,.14); }
+.dl-sub { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.dl-ctl { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.select.sm, .input.sm { padding: 5px 8px; font-size: 12px; }
+.icon-btn { background: transparent; border: 1px solid var(--line); color: var(--text-faint); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+.icon-btn:hover { color: var(--red); border-color: var(--red); }
+.evm-card.muted .evm-value { color: var(--text-faint); }
+
+/* ---- Dispatcher (bot) messages ---- */
+.msg-avatar.bot { background: linear-gradient(135deg, #6d4bd8, #8b5cf6); }
+.msg-row.bot .msg-body { background: rgba(139,92,246,.08); border: 1px solid rgba(139,92,246,.25); border-radius: 8px; padding: 8px 10px; }
+.msg-row.bot .msg-author { color: #b794f6; }
