@@ -23,6 +23,7 @@ import {
   messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from './messaging.js';
 import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
+import { makeIssue, issuesForTask, issueSummary } from './issues.js';
 import { CallManager } from './webrtc.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
@@ -857,6 +858,58 @@ class Store {
   }
   // Trigger a proactive dispatcher scan (admin/PM); returns #posted.
   scanDispatcher() { return api('POST', '/dispatcher/scan').then((r) => (r.data && r.data.posted) || 0).catch(() => 0); }
+
+  // ---- field issues (lightweight, promotable to punch/RFI) ----
+  get issues() { return this.state.issues || []; }
+  issuesForTask(taskId) { return issuesForTask(this.issues, taskId); }
+  issueSummary(projectId) { return issueSummary(this.issues, projectId); }
+
+  async createIssue(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.issues)) this.state.issues = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/issues', partial); this.rev = revOf(etag) ?? this.rev; this.state.issues.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const iss = makeIssue(this.state.issues, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.issues.push(iss); this._emit(); return iss;
+  }
+  updateIssue(id, patch) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this._guardProject(iss.projectId)) return;
+    Object.assign(iss, patch);
+    this._emit();
+    if (this.mode === 'remote') api('PATCH', '/issues/' + id, patch).then(({ data, etag }) => { if (data) Object.assign(iss, data); this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+  async promoteIssue(id, to) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this._guardProject(iss.projectId)) return null;
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/issues/' + id + '/promote', { to });
+        this.rev = revOf(etag) ?? this.rev;
+        if (data && data.issue) Object.assign(iss, data.issue);
+        if (data && data.item && data.created) {                    // splice the new punch/RFI in directly
+          const arr = data.created.kind === 'punch' ? (this.state.punch = this.state.punch || []) : (this.state.docs = this.state.docs || []);
+          if (!arr.some((x) => x.id === data.item.id)) arr.push(data.item);
+        }
+        this._emit();
+        return data;
+      }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    iss.promotedTo = { kind: to, id: 'local' }; iss.status = 'resolved'; this._emit();
+    return { issue: iss, created: { kind: to } };
+  }
+  deleteIssue(id) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (iss && !this._guardProject(iss.projectId)) return;
+    this.state.issues = this.issues.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') api('DELETE', '/issues/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
 
   deleteTask(id) {
     const target = this.task(id);

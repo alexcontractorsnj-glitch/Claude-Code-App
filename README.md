@@ -101,8 +101,19 @@ a task thread is **not a separate channel**: it's a **filtered/synced view of th
 project channel** joined by the `linkedTo={kind,id}` hook — *one source of truth,
 two views*. Task-linked messages appear on the task **and** in the channel (with a
 clickable **↳ task chip**), so nothing fragments; work cards show a 💬 count.
-(Phase A of the task-comms plan; photos, issue-flags, and Last-Planner constraints
-are the next phases.)
+
+**📷 Field capture — photos & issue flags (on the task).** Crews document the work
+right where they do it. **Capture a photo** from the task (camera on the phone,
+file picker on desktop) — it's downscaled to JPEG client-side, stored by reference
+in `POST /api/photos` (kept out of `/api/state`, capped), and posted into the
+Activity feed as an inline thumbnail. They can also **flag an issue** on the task:
+a lightweight field observation with severity (low/normal/high) and an open →
+resolved status. Issues are **promotable** — one tap turns a flagged issue into a
+**punch item** or an **RFI** (auto-resolving the issue and stamping `promotedTo`),
+so a quick field note flows straight into the formal closeout/QA process without
+re-keying. Open high-severity issues feed the **AI dispatcher** so they surface
+alongside late deliveries and blocked tasks. (Phases A–B of the task-comms plan;
+full Last-Planner constraints are the next phase.)
 
 **📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
 online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
@@ -208,6 +219,8 @@ views changes.
 | `POST/PATCH/DELETE /api/changeorders/:id?` | change-order CRUD (approved → billing) |
 | `POST/PATCH/DELETE /api/reports/:id?` | daily field report CRUD |
 | `POST/PATCH/DELETE /api/punch/:id?` | punch-list item CRUD |
+| `POST /api/photos`, `GET /api/photos/:id` | field-photo blob store (by reference, capped, out of `/api/state`) |
+| `POST/PATCH/DELETE /api/issues/:id?`, `POST /api/issues/:id/promote` | field issue flags + promote to punch/RFI |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -508,11 +521,14 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Email/webhook delivery for the alert center
-- Real file/photo upload (blob store) behind the existing attachment model
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
+- Full Last-Planner constraint log (% Made Ready) — the next task-comms phase
 
-**Done recently:** ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
+**Done recently:** ✅ **Field capture on the task** — photos (camera/file →
+client-side JPEG → blob store) and **issue flags** that promote to punch/RFI ·
+✅ **Task Activity** (comments + voice notes on the work item, synced to the
+project channel) · ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
 channel, STUN) · ✅ **Real-time SSE** (instant delivery + presence + typing) ·
 ✅ **AI Dispatcher** (Claude tool-use agent + deliveries, proactive alerts) ·
 ✅ **Voice notes + dictation** · ✅ **Team messaging** — per-project channels with a web

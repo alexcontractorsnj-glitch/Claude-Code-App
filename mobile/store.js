@@ -13,6 +13,7 @@ import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
   messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from '../src/js/messaging.js';
+import { makeIssue, issuesForTask } from '../src/js/issues.js';
 import { CallManager } from '../src/js/webrtc.js';
 import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
@@ -404,6 +405,19 @@ class MobileStore {
     this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
   }
 
+  // ---- field issues ----
+  get issues() { return this.state.issues || []; }
+  issuesForTask(taskId) { return issuesForTask(this.issues, taskId); }
+  createIssue(partial) {
+    if (!this.canEditProject(partial.projectId)) { this.notify('You don’t have access to that project.', 'warn'); return; }
+    this._queueWrite({ kind: 'issue.create', method: 'POST', path: '/issues', body: partial });
+  }
+  resolveIssue(id) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this.canEditProject(iss.projectId)) return;
+    this._queueWrite({ kind: 'issue.patch', targetId: id, method: 'PATCH', path: '/issues/' + id, body: { status: 'resolved' } });
+  }
+
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
     const at = new Date().toISOString();
@@ -473,6 +487,12 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push(makeReport(this.state.reports, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'issue.create') {
+      if (!Array.isArray(this.state.issues)) this.state.issues = [];
+      this.state.issues.push(makeIssue(this.state.issues, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, op.body, { resolvedBy: this.user, resolvedAt: new Date().toISOString() });
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null }));
@@ -504,6 +524,12 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push({ id: op.qid, attachments: [], _provisional: true, ...op.body });
+    } else if (op.kind === 'issue.create') {
+      if (!Array.isArray(this.state.issues)) this.state.issues = [];
+      this.state.issues.push({ id: op.qid, number: '…', status: 'open', severity: 'normal', _provisional: true, ...op.body });
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, op.body);
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], linkedTo: op.body.linkedTo || null, createdAt: new Date().toISOString(), _provisional: true });
@@ -577,6 +603,12 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
+    } else if (op.kind === 'issue.create') {
+      const i = (this.state.issues || []).findIndex((x) => x.id === op.qid);
+      if (i >= 0) this.state.issues[i] = data; else this.state.issues.push(data);
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, data);
     } else if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') {
       const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);

@@ -232,8 +232,37 @@ function openTaskSheet(id) {
     } else {
       body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
     }
+    renderTaskIssues(body, id);
     renderTaskActivity(body, id);
   });
+}
+
+// Field issues raised on a task (flag + resolve; promotion is an office action).
+function renderTaskIssues(body, taskId) {
+  const t = store.task(taskId);
+  body.appendChild(el('div', { class: 'sheet-label' }, '⚠️ Issues'));
+  const list = el('div', { class: 'iss-list-m' });
+  body.appendChild(list);
+  const render = () => {
+    clear(list);
+    const issues = store.issuesForTask(taskId);
+    if (!issues.length) { list.appendChild(el('div', { class: 'ta-empty-m' }, 'No issues flagged.')); return; }
+    issues.forEach((i) => {
+      list.appendChild(el('div', { class: 'iss-row-m sev-' + i.severity + (i.status === 'resolved' ? ' resolved' : '') }, [
+        el('div', { class: 'iss-title-m' }, `${i.number} ${i.title}`),
+        el('div', { class: 'iss-meta-m' }, `${i.severity}${i.status === 'resolved' ? ' · resolved' : ''}${i.promotedTo ? ' · → ' + i.promotedTo.kind.toUpperCase() : ''}`),
+        (i.status === 'open' && !i.promotedTo && store.canEditProject(i.projectId)) ? el('button', { class: 'qbtn', onclick: () => { store.resolveIssue(i.id); render(); } }, 'Resolve') : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'cf-input', placeholder: 'Flag an issue…' });
+    const sev = el('select', { class: 'cf-input' }, [['normal', 'Normal'], ['high', 'High'], ['low', 'Low']].map(([v, l]) => el('option', { value: v }, l)));
+    const flag = () => { const v = title.value.trim(); if (!v) return; store.createIssue({ projectId: t.projectId, taskId, title: v, severity: sev.value }); title.value = ''; render(); };
+    body.appendChild(el('div', { class: 'iss-composer-m' }, [title, sev, el('button', { class: 'cf-chat-send', onclick: flag }, '⚠')]));
+  }
 }
 
 // Per-task discussion (the task's slice of its project channel) inside the sheet.

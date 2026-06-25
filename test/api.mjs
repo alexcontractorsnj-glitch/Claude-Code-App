@@ -159,6 +159,21 @@ try {
   const after = (await http('GET', '/api/state')).data.messages.filter((m) => m.authorId === 'dispatcher').length;
   ok(after > before, '@dispatcher mention triggers a reply');
 
+  // --- field issues (flag → promote to punch/RFI) ---
+  const iss = await http('POST', '/api/issues', { projectId: 'p1', taskId: 't4', title: 'Crack at grid C', severity: 'high' });
+  ok(iss.status === 201 && iss.data.number && iss.data.status === 'open', 'create field issue');
+  const promo = await http('POST', '/api/issues/' + iss.data.id + '/promote', { to: 'punch' });
+  ok(promo.status === 200 && promo.data.created.kind === 'punch' && promo.data.issue.status === 'resolved' && promo.data.issue.promotedTo, 'promote issue → punch + auto-resolve');
+  ok((await http('GET', '/api/state')).data.punch.some((p) => p.id === promo.data.created.id && p.taskId === 't4'), 'promoted punch item exists, linked to the task');
+  const iss2 = await http('POST', '/api/issues', { projectId: 'p1', title: 'minor scuff' });
+  ok((await http('PATCH', '/api/issues/' + iss2.data.id, { status: 'resolved' })).data.status === 'resolved', 'resolve issue');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'issue.promote'), 'issue.promote audited');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/issues', { projectId: 'p1', title: 'x' })).status === 403, 'viewer cannot flag an issue → 403');
+  await login('awhitfield', 'build123');
+  ok((await http('POST', '/api/issues', { projectId: 'p2', title: 'x' })).status === 403, 'scoped PM flags other project → 403');
+  await login('admin', 'admin123');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

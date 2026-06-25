@@ -434,6 +434,44 @@ function taskActivitySection(taskId) {
   return wrap;
 }
 
+// --- Task issues (lightweight field flags, promotable to punch/RFI) ---------
+function taskIssuesSection(taskId) {
+  const t = store.task(taskId);
+  const wrap = el('div', { class: 'task-issues' });
+  wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '⚠️ Issues')]));
+  const list = el('div', { class: 'iss-list' });
+  wrap.appendChild(list);
+  const render = () => {
+    clear(list);
+    const issues = store.issuesForTask(taskId);
+    if (!issues.length) { list.appendChild(el('div', { class: 'ta-empty' }, 'No issues flagged on this task.')); return; }
+    issues.forEach((i) => {
+      const canEdit = store.canEditProject(i.projectId) && !i.promotedTo;
+      list.appendChild(el('div', { class: 'iss-row sev-' + i.severity + (i.status === 'resolved' ? ' resolved' : '') }, [
+        el('div', { class: 'iss-main' }, [
+          el('div', { class: 'iss-title' }, `${i.number}  ${i.title}`),
+          el('div', { class: 'iss-meta' }, `${i.severity}${i.status === 'resolved' ? ' · resolved' : ''}${i.promotedTo ? ' · → ' + i.promotedTo.kind.toUpperCase() : ''} · ${i.createdBy || ''}`),
+        ]),
+        canEdit ? el('div', { class: 'iss-actions' }, [
+          i.status === 'open' ? el('button', { class: 'btn sm ghost', onclick: () => { store.updateIssue(i.id, { status: 'resolved' }); render(); } }, 'Resolve') : null,
+          el('button', { class: 'btn sm', title: 'Promote to a punch item', onclick: async () => { await store.promoteIssue(i.id, 'punch'); render(); store._notify('Issue promoted to a punch item.', 'info'); } }, '→ Punch'),
+          el('button', { class: 'btn sm', title: 'Promote to an RFI', onclick: async () => { await store.promoteIssue(i.id, 'rfi'); render(); store._notify('Issue promoted to an RFI.', 'info'); } }, '→ RFI'),
+        ]) : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'input', placeholder: 'Flag an issue on this task…' });
+    const sev = el('select', { class: 'select' }, [['normal', 'Normal'], ['high', 'High'], ['low', 'Low']].map(([v, l]) => el('option', { value: v }, l)));
+    const flag = () => { const v = title.value.trim(); if (!v) return; store.createIssue({ projectId: t.projectId, taskId, title: v, severity: sev.value }); title.value = ''; render(); };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); flag(); } });
+    wrap.appendChild(el('div', { class: 'iss-composer' }, [title, sev, el('button', { class: 'btn primary sm', onclick: flag }, '⚠ Flag')]));
+  }
+  return wrap;
+}
+
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
   const isNew = taskId == null;
@@ -515,6 +553,7 @@ function openEditor(taskId) {
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
       !isNew ? metaPanel(t) : null,
+      !isNew ? taskIssuesSection(taskId) : null,
       !isNew ? taskActivitySection(taskId) : null,
       (!isNew && store.mode === 'remote') ? historySection(taskId) : null,
     ]),

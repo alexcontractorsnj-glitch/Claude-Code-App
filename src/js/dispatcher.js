@@ -46,6 +46,12 @@ export function analyzeField(state, today = Dates.today()) {
     }
   });
 
+  (state.issues || []).forEach((iss) => {
+    if (iss.status !== 'open' || iss.severity !== 'high') return;
+    const on = taskName(state, iss.taskId);
+    add(iss.projectId, 'issue-high', 'high', `⚠️ Field issue ${iss.number}: ${iss.title}${on ? ` (on “${on}”)` : ''}`, 'iss-' + iss.id);
+  });
+
   computeAlerts(state.tasks || [], state.baseline, state.docs || [], state.punch || []).forEach((a) => {
     add(a.projectId, a.kind || a.type, a.severity === 'high' ? 'high' : a.severity === 'low' ? 'low' : 'medium',
       `${ALERT_ICON[a.type] || '•'} ${a.title}: ${a.message}`,

@@ -214,6 +214,19 @@ ok(messagesForTask(tam, 't4')[0].body === 'on the footing', 'task activity sorte
 ok(taskActivityCount(tam, 't7') === 1 && taskActivityCount(tam, 'tZ') === 0, 'taskActivityCount per task');
 ok(!messagesForTask(tam, 't4').some((m) => m.body === 'general chatter'), 'general chatter excluded from task activity');
 
+section('field issues');
+const { makeIssue, issuesForTask, issueSummary, isOpenIssue } = await import('../src/js/issues.js');
+ok(seed.issues.length === 3 && seed.issues[0].number === 'I-001', 'seed has 3 numbered issues');
+ok(makeIssue([], { projectId: 'p1', severity: 'bogus' }).severity === 'normal', 'issue invalid severity → normal');
+const il = [makeIssue([], { projectId: 'p1', taskId: 't4', severity: 'high' })];
+il.push(makeIssue(il, { projectId: 'p1', taskId: 't4', status: 'resolved' }));
+il.push(makeIssue(il, { projectId: 'p1', taskId: 't7' }));
+ok(il[1].id === 'is2' && il[1].number === 'I-002', 'issue ids/numbers increment');
+ok(issuesForTask(il, 't4').length === 2, 'issuesForTask filters');
+const isum = issueSummary(il, 'p1');
+ok(isum.total === 3 && isum.open === 2 && isum.highOpen === 1, 'issueSummary counts');
+ok(isOpenIssue(il[0]) && !isOpenIssue(il[1]), 'isOpenIssue');
+
 section('dictation language (EN/ES)');
 const voiceMod = await import('../src/js/voice.js');
 ok(voiceMod.getDictationLang() === 'en-US', 'default dictation language is English');

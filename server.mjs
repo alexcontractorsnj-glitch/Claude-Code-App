@@ -25,6 +25,7 @@ import { makeReport } from './src/js/fieldreports.js';
 import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
 import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
 import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
+import { makeIssue, ISSUE_SEVERITIES, ISSUE_STATUSES } from './src/js/issues.js';
 import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
@@ -845,6 +846,66 @@ async function handleApi(req, res, urlPath) {
         state.deliveries = state.deliveries.filter((x) => x.id !== id);
         bump(); await persistState();
         logAudit(actor, 'delivery.delete', { targetName: d.item, projectId: d.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'issues') {
+      if (!Array.isArray(state.issues)) state.issues = [];
+      if (method === 'POST' && !id) {                 // flag a field issue
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const pref = body.photo && body.photo.id && photos[body.photo.id] ? { id: body.photo.id, mime: photos[body.photo.id].mime } : null;
+        const iss = makeIssue(state.issues, { ...body, photo: pref, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.issues.push(iss);
+        bump(); await persistState();
+        logAudit(actor, 'issue.create', { targetId: iss.id, targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId, detail: iss.severity });
+        return send(res, 201, iss, { ETag: etag() });
+      }
+      if (method === 'POST' && id && sub === 'promote') {   // → formal punch item or RFI
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req).catch(() => ({}));
+        const to = body.to === 'rfi' ? 'rfi' : 'punch';
+        let created, item;
+        if (to === 'punch') {
+          if (!Array.isArray(state.punch)) state.punch = [];
+          item = makePunchItem(state.punch, { projectId: iss.projectId, taskId: iss.taskId, title: iss.title, priority: iss.severity === 'high' ? 'high' : 'normal', createdBy: actor.name, createdAt: new Date().toISOString() });
+          state.punch.push(item); created = { kind: 'punch', id: item.id, number: item.number };
+        } else {
+          if (!Array.isArray(state.docs)) state.docs = [];
+          item = makeDoc(state.docs, { kind: 'rfi', projectId: iss.projectId, taskId: iss.taskId, title: iss.title, createdBy: actor.name, createdAt: new Date().toISOString() });
+          state.docs.push(item); created = { kind: 'rfi', id: item.id, number: item.number };
+        }
+        iss.promotedTo = { kind: created.kind, id: created.id };
+        iss.status = 'resolved'; iss.resolvedBy = actor.name; iss.resolvedAt = new Date().toISOString(); iss.rev = (iss.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'issue.promote', { targetId: iss.id, targetName: `${iss.number} → ${created.number}`, projectId: iss.projectId, detail: created.kind });
+        return send(res, 200, { issue: iss, created, item }, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'severity', 'status'].forEach((k) => { if (body[k] !== undefined) iss[k] = body[k]; });
+        if (!ISSUE_SEVERITIES.includes(iss.severity)) iss.severity = 'normal';
+        if (!ISSUE_STATUSES.includes(iss.status)) iss.status = 'open';
+        if (iss.status === 'resolved' && !iss.resolvedAt) { iss.resolvedBy = actor.name; iss.resolvedAt = new Date().toISOString(); }
+        if (iss.status === 'open') { iss.resolvedBy = null; iss.resolvedAt = null; }
+        iss.rev = (iss.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'issue.update', { targetId: iss.id, targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId, detail: `status ${iss.status}` });
+        return send(res, 200, iss, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.issues = state.issues.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'issue.delete', { targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }
