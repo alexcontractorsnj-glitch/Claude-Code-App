@@ -81,10 +81,21 @@ function closeSheet() {
   setTimeout(() => b.remove(), 220);
 }
 
+// Skip a DOM rebuild when nothing displayed changed — kills flicker from the
+// frequent SSE presence/reconnect events on cheap hosting (each one used to
+// rebuild the bar, tabs, and stream even though their content was identical).
+const _sig = {};
+function changed(key, value) {
+  const s = JSON.stringify(value);
+  if (_sig[key] === s) return false;
+  _sig[key] = s; return true;
+}
+
 // --- app bar ----------------------------------------------------------------
 function renderBar() {
   const bar = document.getElementById('cf-bar');
   if (!bar) return;
+  if (!changed('bar', [store.projectId, store.projects.map((p) => p.id), store.local, store.online, store.pendingCount()]) && bar.childNodes.length) return;
   clear(bar);
   const projects = store.projects;
   const sel = el('select', { class: 'cf-proj', onchange: (e) => store.setProject(e.target.value) }, [
@@ -110,9 +121,10 @@ function renderBar() {
 function renderTabBar() {
   const tb = document.getElementById('cf-tabs');
   if (!tb) return;
-  clear(tb);
   const s = store.summary();
   const badge = { work: s.overdue, chat: store.totalUnread(), punch: store.punch().filter((p) => p.status === 'open').length, reports: 0, me: store.pendingCount() };
+  if (!changed('tabs', [ui.tab, badge]) && tb.childNodes.length) return;
+  clear(tb);
   Object.entries(TABS).forEach(([key, t]) => {
     const b = badge[key];
     tb.appendChild(el('button', {
@@ -580,10 +592,17 @@ function renderConversation(main, channelId) {
   main.appendChild(typingSlot);
 
   const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 90;
+  let streamSig = null;
   const paintStream = () => {
+    const msgs = store.messagesFor(channelId);
+    const typers = store.typingIn(channelId);
+    // Only rebuild when the messages or typing set actually changed. A presence
+    // ping or stream reconnect leaves both identical → no DOM churn, no flicker.
+    const sig = msgs.map((m) => m.id + (m._provisional ? '~' : '') + (m.voice ? 'v' : '') + (m.photo ? 'p' : '')).join(',') + '|' + typers.join(',');
+    if (sig === streamSig) { store.markRead(channelId); return; }
+    streamSig = sig;
     const stick = nearBottom();
     clear(stream);
-    const msgs = store.messagesFor(channelId);
     if (!msgs.length) stream.appendChild(el('div', { class: 'cf-empty' }, 'No messages yet. Say hello.'));
     let lastDay = null;
     msgs.forEach((m) => {
@@ -610,7 +629,6 @@ function renderConversation(main, channelId) {
     });
     if (stick) stream.scrollTop = stream.scrollHeight;
     clear(typingSlot);
-    const typers = store.typingIn(channelId);
     if (typers.length) typingSlot.appendChild(el('div', { class: 'cf-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
     store.markRead(channelId);                 // guarded: emits at most once when there's new unread
   };
@@ -825,17 +843,24 @@ function renderCallUI(s) {
 function boot() {
   root = document.getElementById('cf-app');
   store.onAuth((authState) => renderShell(authState));
-  // While viewing a chat conversation, ambient emits (presence, typing, sync,
-  // mark-read) must NOT tear down #cf-main — that destroys the composer and
-  // scroll, causing flicker and stealing input focus. The conversation repaints
-  // its own message stream via a local subscription; here we only refresh the
-  // top bar + tab badges. Every other view still does a full render.
+  // Emits can arrive in bursts (SSE presence + sync + typing, plus reconnects on
+  // cheap hosting). Coalesce them into one update per animation frame so a burst
+  // can't cause repeated rebuilds. While viewing a chat conversation we never
+  // tear down #cf-main (that destroys the composer/scroll and steals input
+  // focus) — the conversation repaints its own stream via a local subscription;
+  // here we only refresh the top bar + tab badges, both of which skip when
+  // unchanged. Every other view does a full (coalesced) render.
+  let rafPending = 0;
   store.subscribe(() => {
-    if (built && ui.tab === 'chat' && ui.chatChannelId && document.querySelector('.cf-chat-stream')) {
-      renderBar(); renderTabBar();
-    } else {
-      render();
-    }
+    if (rafPending) return;
+    rafPending = requestAnimationFrame(() => {
+      rafPending = 0;
+      if (built && ui.tab === 'chat' && ui.chatChannelId && document.querySelector('.cf-chat-stream')) {
+        renderBar(); renderTabBar();
+      } else {
+        render();
+      }
+    });
   });
   store.onCall((snap) => renderCallUI(snap));
   store.onNotice((msg, tone = 'info') => {
