@@ -128,6 +128,16 @@ in the project channel, and the dispatcher can **clear a constraint** once it's
 resolved (`clear_constraint` tool). One source of truth, planned upstream on the
 task and rolled up for the PM. (Phases A–C of the task-comms plan.)
 
+**🤖 Chat with the dispatcher — on the task, and out loud.** Beyond `@dispatcher`
+in a channel, every task's Activity feed has an **🤖 Ask** button: type a question
+and the agent **always replies in that task's thread** (`POST /api/dispatcher/ask`)
+— no `@mention` needed, and follow-ups keep the conversation going. The reply is
+scoped to the task (recent task activity + its open constraints/issues as context)
+and can take real actions. With **🔊 Voice on** (per-feed toggle, persisted) the
+agent's replies are **read aloud** via the Web Speech API in the dictation
+language (EN/ES), and every reply has a 🔊 play button. `@dispatcher` mentions now
+also reply *in-thread* when the message was task-linked.
+
 **📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
 online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
 peer-to-peer **WebRTC**, with offer/answer/ICE **signaled over the same SSE

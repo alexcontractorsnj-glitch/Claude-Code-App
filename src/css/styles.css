@@ -771,6 +771,10 @@ textarea.input { resize: vertical; font-family: inherit; }
 .task-activity { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
 .ta-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; color: var(--text-dim); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .5px; }
 .ta-count { background: var(--accent); color: #1a1206; font-size: 11px; font-weight: 800; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: grid; place-items: center; }
+.ta-speak-toggle { margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer; }
+.ta-speak-toggle.on { color: var(--accent); border-color: var(--accent); }
+.ta-speak { background: none; border: none; cursor: pointer; font-size: 12px; padding: 0 4px; opacity: .7; }
+.ta-speak:hover { opacity: 1; }
 .ta-callbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 8px 10px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px; }
 .ta-callbar-label { font-size: 12px; font-weight: 700; color: var(--text-dim); }
 .ta-callbar-none { font-size: 12px; color: var(--text-faint); }

@@ -195,6 +195,15 @@ try {
   ok(tact.data.messages.some((m) => m.id === recap.data.id && m.linkedTo && m.linkedTo.id === 't4'), 'recap appears in the task activity (linkedTo)');
   ok((await http('POST', '/api/tasks/nope/callsummary', { durationSec: 5 })).status === 404, 'call recap for missing task → 404');
 
+  // --- chat with the dispatcher on a task (always answers; reply is task-linked) ---
+  const ask = await http('POST', '/api/dispatcher/ask', { taskId: 't4', text: 'what is blocking this task?' });
+  ok(ask.status === 201 && ask.data.linkedTo && ask.data.linkedTo.id === 't4' && ask.data.authorId !== 'dispatcher', 'ask posts the user message into the task thread');
+  await new Promise((r) => setTimeout(r, 200));   // reply is posted asynchronously
+  const askState = (await http('GET', '/api/state')).data;
+  ok(askState.messages.some((m) => m.authorId === 'dispatcher' && m.linkedTo && m.linkedTo.id === 't4'), 'dispatcher reply lands in the same task thread (no @mention needed)');
+  ok((await http('POST', '/api/dispatcher/ask', { taskId: 'nope', text: 'x' })).status === 404, 'ask on missing task → 404');
+  ok((await http('POST', '/api/dispatcher/ask', { taskId: 't4', text: '' })).status === 400, 'empty ask → 400');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

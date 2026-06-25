@@ -25,6 +25,7 @@ import { WEATHER } from './fieldreports.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
 import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from './constraints.js';
 import { callsSupported } from './webrtc.js';
+import { supportsSpeech, speak, autoSpeakOn, toggleAutoSpeak } from './speech.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -408,37 +409,57 @@ function taskCallBar(taskId) {
 function taskActivitySection(taskId) {
   const wrap = el('div', { class: 'task-activity' });
   const count = el('span', { class: 'ta-count' });
-  wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '💬 Activity'), count]));
+  const head = el('div', { class: 'ta-head' }, [el('span', {}, '💬 Activity'), count]);
+  if (supportsSpeech()) {
+    const spk = el('button', { class: 'ta-speak-toggle' + (autoSpeakOn() ? ' on' : ''), title: 'Read the agent’s replies aloud' });
+    spk.textContent = autoSpeakOn() ? '🔊 Voice on' : '🔇 Voice off';
+    spk.onclick = () => { const on = toggleAutoSpeak(); spk.classList.toggle('on', on); spk.textContent = on ? '🔊 Voice on' : '🔇 Voice off'; };
+    head.appendChild(spk);
+  }
+  wrap.appendChild(head);
   const cb = taskCallBar(taskId);
   if (cb) wrap.appendChild(cb);
   const feed = el('div', { class: 'ta-feed' });
   wrap.appendChild(feed);
 
+  let lastSpokenId = null;                            // auto-speak only brand-new bot replies
   const renderFeed = () => {
     clear(feed);
     const msgs = store.messagesForTask(taskId);
     count.textContent = msgs.length ? String(msgs.length) : '';
-    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty' }, 'No activity yet — comment or leave a voice note about this task.')); return; }
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty' }, 'No activity yet — comment, leave a voice note, or 🤖 ask the dispatcher about this task.')); return; }
     msgs.forEach((m) => {
       const bot = m.authorId === 'dispatcher';
       feed.appendChild(el('div', { class: 'ta-msg' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
-        el('div', { class: 'ta-byline' }, [el('span', { class: 'ta-author' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time' }, taFmt(m.createdAt))]),
+        el('div', { class: 'ta-byline' }, [
+          el('span', { class: 'ta-author' }, bot ? '🤖 ' + m.authorName : m.authorName),
+          el('span', { class: 'ta-time' }, taFmt(m.createdAt)),
+          (bot && m.body && supportsSpeech()) ? el('button', { class: 'ta-speak', title: 'Play this reply', onclick: () => speak(m.body) }, '🔊') : null,
+        ]),
         m.body ? el('div', { class: 'ta-body' }, m.body) : null,
         m.voice ? el('audio', { class: 'ta-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
         m.photo ? el('img', { class: 'ta-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
       ]));
     });
     feed.scrollTop = feed.scrollHeight;
+    // Auto-speak the latest dispatcher reply once, if the toggle is on.
+    const last = msgs[msgs.length - 1];
+    if (last && last.authorId === 'dispatcher' && last.body && last.id !== lastSpokenId) {
+      if (lastSpokenId !== null && autoSpeakOn()) speak(last.body);
+      lastSpokenId = last.id;
+    }
   };
   renderFeed();
   // Live updates while the modal is open (SSE/poll); self-unsubscribe when gone.
   const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
 
   if (store.canPostTask(taskId)) {
-    const input = el('input', { class: 'input', placeholder: 'Comment on this task…  (@name to mention)' });
+    const input = el('input', { class: 'input', placeholder: 'Comment, or ask the dispatcher…' });
     const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    const ask = () => { const v = input.value.trim(); if (!v) return; store.askDispatcherTask(taskId, v); input.value = ''; };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); post(); } });
-    const controls = [input, el('button', { class: 'btn primary sm', onclick: post }, 'Post')];
+    const controls = [input, el('button', { class: 'btn primary sm', onclick: post }, 'Post'),
+      el('button', { class: 'btn sm', title: 'Ask the AI dispatcher about this task (it always replies)', onclick: ask }, '🤖 Ask')];
     if (supportsPhotos()) {
       controls.push(el('button', { class: 'btn icon', title: 'Add photo', onclick: async () => { const pic = await capturePhoto(); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
     }

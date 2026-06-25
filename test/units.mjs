@@ -257,6 +257,12 @@ ok(mr.tasks === 2 && mr.ready === 1 && mr.percent === 50, 'madeReady: t8 ready, 
 ok(madeReady([], 'p1').percent === null, 'madeReady null when no constraints');
 ok(isOpenConstraint(cl[0]) && !isOpenConstraint(cl[1]), 'isOpenConstraint');
 
+section('agent speech (TTS)');
+const { speakable } = await import('../src/js/speech.js');
+ok(speakable('🤖 Footing RFI-001 is overdue — chase the EOR.').includes('Footing RFI-001 is overdue'), 'speakable keeps the words');
+ok(!/[🤖•*_]/.test(speakable('🤖 • *bold* `code`')), 'speakable strips emoji/markdown/bullets');
+ok(speakable('   ') === '' && speakable(null) === '', 'speakable handles empty/null');
+
 section('dictation language (EN/ES)');
 const voiceMod = await import('../src/js/voice.js');
 ok(voiceMod.getDictationLang() === 'en-US', 'default dictation language is English');

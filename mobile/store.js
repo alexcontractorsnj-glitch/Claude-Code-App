@@ -384,6 +384,12 @@ class MobileStore {
     const ch = this.channelFor(t.projectId); if (!ch) return;
     this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
   }
+  // Ask the AI dispatcher about this task — always answers; reply syncs back in.
+  askDispatcherTask(taskId, text) {
+    const t = this.task(taskId); if (!t || !this.canEditProject(t.projectId)) return;
+    if (this.local) { this.notify('The AI dispatcher needs a connection.', 'warn'); return; }
+    api('POST', '/dispatcher/ask', { taskId, text }).then(() => this._refresh()).catch(() => {});
+  }
 
   voiceSrc(msg) {
     if (!msg || !msg.voice) return null;

@@ -717,6 +717,21 @@ class Store {
     const ch = this.channelFor(t.projectId); if (!ch) return null;
     return this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
   }
+  // Chat with the AI dispatcher right on the task — always answers (no @mention
+  // needed); the reply is posted into this task's thread and arrives via sync.
+  async askDispatcherTask(taskId, text) {
+    const t = this.task(taskId); if (!t || !this.canEditProject(t.projectId)) return;
+    if (this.mode !== 'remote') { this._notify('The AI dispatcher needs the live server.', 'warn'); return; }
+    this._setSyncing(true);
+    try { await api('POST', '/dispatcher/ask', { taskId, text }); this._pull(); }
+    catch (e) { this._writeFailed(e); } finally { this._setSyncing(false); }
+  }
+  async askDispatcherChannel(channelId, text) {
+    if (this.mode !== 'remote') { this._notify('The AI dispatcher needs the live server.', 'warn'); return; }
+    this._setSyncing(true);
+    try { await api('POST', '/dispatcher/ask', { channelId, text }); this._pull(); }
+    catch (e) { this._writeFailed(e); } finally { this._setSyncing(false); }
+  }
   // All photos in scope (for the project Photos gallery).
   photosFor(projectId) {
     return (this.messages || [])

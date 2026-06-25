@@ -17,6 +17,7 @@ import { startRecording, startDictation, supportsRecording, supportsDictation, f
 import { callsSupported } from '../src/js/webrtc.js';
 import { capturePhoto, supportsPhotos } from '../src/js/media.js';
 import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from '../src/js/constraints.js';
+import { supportsSpeech, speak, autoSpeakOn, toggleAutoSpeak } from '../src/js/speech.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -323,29 +324,47 @@ function renderTaskActivity(body, taskId) {
     const unsubBar = store.subscribe(() => { if (bar.isConnected) renderBar(); else unsubBar(); });
     body.appendChild(bar);
   }
+  if (supportsSpeech()) {
+    const spk = el('button', { class: 'ta-speak-toggle-m' + (autoSpeakOn() ? ' on' : ''), title: 'Read agent replies aloud' });
+    spk.textContent = autoSpeakOn() ? '🔊 Voice on' : '🔇 Voice off';
+    spk.onclick = () => { const on = toggleAutoSpeak(); spk.classList.toggle('on', on); spk.textContent = on ? '🔊 Voice on' : '🔇 Voice off'; };
+    body.appendChild(spk);
+  }
   const feed = el('div', { class: 'ta-feed-m' });
   body.appendChild(feed);
+  let lastSpokenId = null;
   const renderFeed = () => {
     clear(feed);
     const msgs = store.messagesForTask(taskId);
-    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty-m' }, 'No activity yet — comment or leave a voice note.')); return; }
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty-m' }, 'No activity yet — comment, or 🤖 ask the dispatcher.')); return; }
     msgs.forEach((m) => {
       const bot = m.authorId === 'dispatcher';
       feed.appendChild(el('div', { class: 'ta-msg-m' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
-        el('div', { class: 'ta-byline-m' }, [el('span', { class: 'ta-author-m' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time-m' }, msgTime(m.createdAt))]),
+        el('div', { class: 'ta-byline-m' }, [
+          el('span', { class: 'ta-author-m' }, bot ? '🤖 ' + m.authorName : m.authorName),
+          el('span', { class: 'ta-time-m' }, msgTime(m.createdAt)),
+          (bot && m.body && supportsSpeech()) ? el('button', { class: 'ta-speak-m', title: 'Play', onclick: () => speak(m.body) }, '🔊') : null,
+        ]),
         m.body ? el('div', { class: 'ta-body-m' }, mentionNodes(m.body)) : null,
         m.voice ? el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
         m.photo ? el('img', { class: 'ta-photo-m', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
       ]));
     });
+    const last = msgs[msgs.length - 1];
+    if (last && last.authorId === 'dispatcher' && last.body && last.id !== lastSpokenId) {
+      if (lastSpokenId !== null && autoSpeakOn()) speak(last.body);
+      lastSpokenId = last.id;
+    }
   };
   renderFeed();
   const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
   if (store.canPostTask(taskId)) {
-    const input = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Comment on this task…' });
+    const input = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Comment, or ask the dispatcher…' });
     const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    const ask = () => { const v = input.value.trim(); if (!v) return; store.askDispatcherTask(taskId, v); input.value = ''; };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } });
-    const row = [input, el('button', { class: 'cf-chat-send', onclick: post }, '➤')];
+    const row = [input, el('button', { class: 'cf-chat-send', onclick: post }, '➤'),
+      el('button', { class: 'cf-chat-ico', title: 'Ask the AI dispatcher', onclick: ask }, '🤖')];
     if (supportsPhotos()) {
       row.push(el('button', { class: 'cf-chat-ico', title: 'Photo', onclick: async () => { const pic = await capturePhoto({ camera: true }); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
     }

@@ -303,6 +303,9 @@ textarea.cf-input { resize: vertical; }
 .cf-chat-ico.lang { font-size: 12px; font-weight: 800; }
 
 /* ---- Task Activity (in the task sheet) ---- */
+.ta-speak-toggle-m { display: inline-block; margin-bottom: 10px; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); }
+.ta-speak-toggle-m.on { color: var(--accent); border-color: var(--accent); }
+.ta-speak-m { background: none; border: none; font-size: 13px; padding: 0 4px; }
 .ta-callbar-m { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 8px 10px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 9px; }
 .ta-callbar-label-m { font-size: 12px; font-weight: 700; color: var(--text-dim); }
 .ta-callbar-none-m { font-size: 12px; color: var(--text-faint); }

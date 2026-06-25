@@ -326,14 +326,21 @@ function execDispatcherTool(name, input, actor) {
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
-async function dispatcherReply(channel, actor) {
+async function dispatcherReply(channel, actor, linkedTo = null) {
+  // When the conversation is anchored to a task, scope context + the reply to it.
+  const taskId = linkedTo && linkedTo.kind === 'task' ? linkedTo.id : null;
+  const task = taskId ? (state.tasks || []).find((t) => t.id === taskId) : null;
   // No key → deterministic field digest.
   if (!process.env.ANTHROPIC_API_KEY) {
-    return postDispatcher(channel, fallbackBrief(state, channel.projectId) + '\n\n_(AI offline — set ANTHROPIC_API_KEY for the full assistant.)_', 'reply');
+    return postDispatcher(channel, fallbackBrief(state, channel.projectId) + '\n\n_(AI offline — set ANTHROPIC_API_KEY for the full assistant.)_', 'reply', linkedTo);
   }
-  const recent = state.messages.filter((m) => m.channelId === channel.id).slice(-8).map((m) => `${m.authorName}: ${m.body}`).join('\n');
+  const pool = taskId
+    ? state.messages.filter((m) => m.linkedTo && m.linkedTo.id === taskId)
+    : state.messages.filter((m) => m.channelId === channel.id);
+  const recent = pool.slice(-10).map((m) => `${m.authorName}: ${m.body || (m.voice ? '(voice note)' : m.photo ? '(photo)' : '')}`).join('\n');
+  const ctx = task ? `the task “${task.name}” (project ${channel.projectId})` : `channel “${channel.name}” (project ${channel.projectId})`;
   const system = dispatcherSystem(state, actor && actor.name);
-  const messages = [{ role: 'user', content: `Recent conversation in channel "${channel.name}" (project ${channel.projectId}):\n${recent}\n\nThe latest message mentions you (@dispatcher). Respond as the Dispatcher — check status first, take any clearly-requested actions, and reply concisely.` }];
+  const messages = [{ role: 'user', content: `Recent conversation about ${ctx}:\n${recent}\n\nRespond as the Dispatcher to the latest message — check status first, take any clearly-requested actions, and reply concisely.` }];
   let text = null;
   try {
     for (let step = 0; step < 6; step++) {
@@ -345,7 +352,7 @@ async function dispatcherReply(channel, actor) {
       messages.push({ role: 'user', content: toolUses.map((tu) => ({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(execDispatcherTool(tu.name, tu.input, actor)) })) });
     }
   } catch (e) { console.error('dispatcher: agent', e.message); }
-  return postDispatcher(channel, text || fallbackBrief(state, channel.projectId), 'reply');
+  return postDispatcher(channel, text || fallbackBrief(state, channel.projectId), 'reply', linkedTo);
 }
 
 // --- HTTP helpers -----------------------------------------------------------
@@ -829,8 +836,9 @@ async function handleApi(req, res, urlPath) {
         state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
         bump(); await persistState();
         logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.photo ? '📷 photo' : msg.body.slice(0, 80) });
-        // @dispatcher → the AI replies asynchronously (posts a follow-up message).
-        if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor).catch((e) => console.error('dispatcher', e));
+        // @dispatcher → the AI replies asynchronously, in the same context
+        // (task thread if the message was task-linked, else the channel).
+        if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor, msg.linkedTo).catch((e) => console.error('dispatcher', e));
         return send(res, 201, msg, { ETag: etag() });
       }
     }
@@ -978,6 +986,34 @@ async function handleApi(req, res, urlPath) {
     if (resource === 'dispatcher' && method === 'POST' && id === 'scan') {
       const n = runDispatcherScan();
       return send(res, 200, { posted: n }, { ETag: etag() });
+    }
+    // Direct chat with the agent — always answers (no @mention needed). Anchors
+    // to a task thread when taskId is given, else to a project channel.
+    if (resource === 'dispatcher' && method === 'POST' && id === 'ask') {
+      const body = await readBody(req);
+      const text = String(body.text || '').trim();
+      if (!text) return send(res, 400, { error: 'empty message' });
+      let ch, linkedTo = null;
+      if (body.taskId) {
+        const t = (state.tasks || []).find((x) => x.id === body.taskId);
+        if (!t) return send(res, 404, { error: 'task not found' });
+        if (!canEditProject(actor, t.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        ch = (state.channels || []).find((c) => c.id === channelIdForProject(t.projectId));
+        linkedTo = { kind: 'task', id: t.id };
+      } else {
+        ch = (state.channels || []).find((c) => c.id === body.channelId);
+        if (!ch) return send(res, 400, { error: 'unknown channel' });
+        if (ch.type === 'project' && !canEditProject(actor, ch.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+      }
+      if (!ch) return send(res, 404, { error: 'no channel for that project' });
+      const umsg = makeMessage(state.messages, { channelId: ch.id, authorId: actor.username, authorName: actor.name, body: text, linkedTo, createdAt: new Date().toISOString() });
+      state.messages.push(umsg);
+      state.messages = capChannel(state.messages, ch.id);
+      state.reads = setRead(state.reads, actor.username, ch.id, umsg.createdAt);
+      bump(); await persistState();
+      logAudit(actor, 'message.send', { targetId: umsg.id, targetName: ch.name, projectId: ch.projectId, detail: '🤖 ask: ' + text.slice(0, 72) });
+      dispatcherReply(ch, actor, linkedTo).catch((e) => console.error('dispatcher ask', e));   // reply arrives via sync
+      return send(res, 201, umsg, { ETag: etag() });
     }
 
     if (resource === 'tasks') {
