@@ -14,7 +14,7 @@
 // ============================================================================
 import http from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId } from './src/js/seed.js';
@@ -33,8 +33,23 @@ import {
 } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.argv[2] || process.env.PORT || 8000;
 const ROOT = __dirname;
+
+// Load a gitignored .env so secrets (e.g. ANTHROPIC_API_KEY for the AI
+// dispatcher) can live in a file instead of the shell. Zero-dep KEY=VALUE parser;
+// real environment variables always win over the file.
+(function loadDotenv() {
+  try {
+    for (const line of readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) {
+        process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+      }
+    }
+  } catch { /* no .env — fine */ }
+})();
+
+const PORT = process.argv[2] || process.env.PORT || 8000;
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'schedule.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
