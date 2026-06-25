@@ -73,7 +73,9 @@ the research (WhatsApp/Slack/Procore) behind the design.
 - **🎤 Voice notes + dictation:** record a voice note in either app (MediaRecorder
   → uploaded to `POST /api/voice`, streamed back from `GET /api/voice/:id` so
   audio never bloats the polled state; capped ~45s, demo mode embeds it locally),
-  or tap the 🎙 mic to **dictate** a message via on-device speech-to-text.
+  or tap the 🎙 mic to **dictate** a message via on-device speech-to-text, with
+  a one-tap **EN/ES toggle** so English- and Spanish-speaking crews can dictate in
+  their own language (the Web Speech API recognises one language per session).
 - **Shared, tested core** (`src/js/messaging.js`): channels, messages, unread
   counts, `@mention` parsing, search, and a per-channel **cap** (last 200) that
   keeps the zero-DB JSON store bounded. Every send is **audited**

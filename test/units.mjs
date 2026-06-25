@@ -202,5 +202,12 @@ ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a dig
 ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
 ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
 
+section('dictation language (EN/ES)');
+const voiceMod = await import('../src/js/voice.js');
+ok(voiceMod.getDictationLang() === 'en-US', 'default dictation language is English');
+ok(voiceMod.cycleDictationLang() === 'es-US', 'cycle toggles English → Spanish');
+ok(voiceMod.dictationLabel('en-US') === 'EN' && voiceMod.dictationLabel('es-US') === 'ES', 'dictationLabel EN/ES');
+ok(voiceMod.DICTATION_LANGS.length === 2, 'two dictation languages configured');
+
 console.log(`\n${fail === 0 ? '✓' : '✗'} units: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

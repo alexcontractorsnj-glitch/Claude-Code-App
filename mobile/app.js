@@ -13,7 +13,7 @@ import {
 import { el, clear } from '../src/js/utils.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
-import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../src/js/voice.js';
+import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../src/js/voice.js';
 import { callsSupported } from '../src/js/webrtc.js';
 
 const TABS = {
@@ -477,6 +477,8 @@ function renderConversation(main, channelId) {
     const btns = [];
     if (supportsDictation()) {
       let dict = null;
+      const langBtn = el('button', { class: 'cf-chat-ico lang', title: 'Dictation language' }, dictationLabel());
+      langBtn.onclick = () => { langBtn.textContent = dictationLabel(cycleDictationLang()); };
       const mic = el('button', { class: 'cf-chat-ico', title: 'Dictate' }, '🎙');
       mic.onclick = () => {
         if (dict) { dict.stop(); dict = null; mic.classList.remove('on'); return; }
@@ -484,7 +486,7 @@ function renderConversation(main, channelId) {
         dict = startDictation((f, i) => { ta.value = base + f + i; }, () => { dict = null; mic.classList.remove('on'); });
         if (dict) mic.classList.add('on');
       };
-      btns.push(mic);
+      btns.push(langBtn, mic);
     }
     const recBtn = supportsRecording()
       ? el('button', { class: 'cf-chat-ico rec', title: 'Voice note', onclick: async () => { try { ui.chatRec = await startRecording(); render(); } catch { store.notify('Microphone unavailable.', 'warn'); } } }, '🎤')
