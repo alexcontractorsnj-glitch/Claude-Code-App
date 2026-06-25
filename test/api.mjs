@@ -100,6 +100,20 @@ try {
   await login('admin', 'admin123');
   ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'message.send'), 'message.send audited');
 
+  // --- voice notes ---
+  const b64 = Buffer.from('fake-audio-bytes').toString('base64');
+  const up = await http('POST', '/api/voice', { mime: 'audio/webm', data: b64, dur: 5 });
+  ok(up.status === 201 && up.data.id && up.data.dur === 5, 'voice upload → id');
+  const vmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', voice: { id: up.data.id } });
+  ok(vmsg.status === 201 && vmsg.data.voice && vmsg.data.voice.id === up.data.id, 'voice message references the upload');
+  ok(JSON.stringify(await http('GET', '/api/state')).indexOf(b64) === -1, 'audio bytes are NOT in /api/state (kept lean)');
+  const fetched = await fetch(BASE + '/api/voice/' + up.data.id, { headers: { Cookie: cookie } });
+  ok(fetched.status === 200 && fetched.headers.get('content-type') === 'audio/webm', 'voice GET streams audio');
+  ok((await http('POST', '/api/voice', { mime: 'audio/webm', data: 'A'.repeat(1_500_000), dur: 99 })).status === 413, 'oversize voice → 413');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/voice', { mime: 'audio/webm', data: b64, dur: 5 })).status === 403, 'viewer cannot upload voice → 403');
+  await login('admin', 'admin123');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

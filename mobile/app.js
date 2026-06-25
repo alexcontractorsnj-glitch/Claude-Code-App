@@ -13,6 +13,7 @@ import {
 import { el, clear } from '../src/js/utils.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
+import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../src/js/voice.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -419,7 +420,11 @@ function renderConversation(main, channelId) {
     stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
       el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (m._provisional ? ' pending' : '') }, [
         mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
-        el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)),
+        m.body ? el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)) : null,
+        m.voice ? el('div', { class: 'cf-bubble-voice' }, [
+          el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
+          el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
+        ]) : null,
         el('div', { class: 'cf-bubble-meta' }, [
           el('span', {}, msgTime(m.createdAt)),
           mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
@@ -429,11 +434,43 @@ function renderConversation(main, channelId) {
   });
   main.appendChild(stream);
 
-  if (store.canPost(channelId)) {
+  if (store.canPost(channelId) && ui.chatRec) {
+    const timeLbl = el('span', { class: 'cf-rec-time' }, '0:00');
+    if (ui.chatRecInt) clearInterval(ui.chatRecInt);
+    ui.chatRecSec = ui.chatRec.elapsed();
+    timeLbl.textContent = fmtDur(ui.chatRecSec);
+    ui.chatRecInt = setInterval(() => { ui.chatRecSec += 1; timeLbl.textContent = fmtDur(ui.chatRecSec); }, 1000);
+    const finish = (sendIt) => async () => {
+      clearInterval(ui.chatRecInt); ui.chatRecInt = null;
+      const r = ui.chatRec; ui.chatRec = null;
+      if (sendIt) { const clip = await r.stop(); if (clip && clip.b64) store.sendVoice(channelId, clip); } else r.cancel();
+      render();
+    };
+    main.appendChild(el('div', { class: 'cf-chat-composer recording' }, [
+      el('span', { class: 'cf-rec-dot' }), el('span', { class: 'cf-rec-lbl' }, 'Recording'), timeLbl,
+      el('button', { class: 'cf-rec-cancel', onclick: finish(false) }, '✕'),
+      el('button', { class: 'cf-chat-send', onclick: finish(true) }, '➤'),
+    ]));
+  } else if (store.canPost(channelId)) {
     const ta = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Message…' });
     const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; render(); };
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-    main.appendChild(el('div', { class: 'cf-chat-composer' }, [ta, el('button', { class: 'cf-chat-send', onclick: send }, '➤')]));
+    const btns = [];
+    if (supportsDictation()) {
+      let dict = null;
+      const mic = el('button', { class: 'cf-chat-ico', title: 'Dictate' }, '🎙');
+      mic.onclick = () => {
+        if (dict) { dict.stop(); dict = null; mic.classList.remove('on'); return; }
+        const base = ta.value ? ta.value + ' ' : '';
+        dict = startDictation((f, i) => { ta.value = base + f + i; }, () => { dict = null; mic.classList.remove('on'); });
+        if (dict) mic.classList.add('on');
+      };
+      btns.push(mic);
+    }
+    const recBtn = supportsRecording()
+      ? el('button', { class: 'cf-chat-ico rec', title: 'Voice note', onclick: async () => { try { ui.chatRec = await startRecording(); render(); } catch { store.notify('Microphone unavailable.', 'warn'); } } }, '🎤')
+      : null;
+    main.appendChild(el('div', { class: 'cf-chat-composer' }, [...btns, ta, el('button', { class: 'cf-chat-send', onclick: send }, '➤'), recBtn]));
   } else {
     main.appendChild(el('div', { class: 'cf-chat-composer readonly' }, store.can('write') ? 'No posting access to this project' : 'Read-only role'));
   }

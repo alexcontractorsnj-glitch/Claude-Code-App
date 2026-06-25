@@ -297,6 +297,21 @@ class MobileStore {
     this.markRead(channelId);
   }
 
+  voiceSrc(msg) {
+    if (!msg || !msg.voice) return null;
+    return msg.voice.url || ('/api/voice/' + msg.voice.id);
+  }
+
+  // Send a voice note (queued through the outbox so it survives no signal).
+  // clip = { mime, b64, dur }.
+  sendVoice(channelId, clip) {
+    const ch = this.channel(channelId);
+    if (!ch || !clip || !clip.b64) return;
+    if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
+    this._queueWrite({ kind: 'voice.send', channelId, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
+    this.markRead(channelId);
+  }
+
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
     const at = new Date().toISOString();
@@ -370,6 +385,10 @@ class MobileStore {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
+    } else if (op.kind === 'voice.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
+      this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
   }
@@ -392,6 +411,9 @@ class MobileStore {
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], createdAt: new Date().toISOString(), _provisional: true });
+    } else if (op.kind === 'voice.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
     }
   }
 
@@ -406,8 +428,15 @@ class MobileStore {
       while (this.outbox.length) {
         const op = this.outbox[0];
         try {
-          const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
-          const { data, etag } = await api(op.method, op.path, op.body, headers);
+          let data, etag;
+          if (op.kind === 'voice.send') {
+            // Two-step: upload the audio blob, then post the message referencing it.
+            const up = await api('POST', '/voice', { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
+            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, voice: { id: up.data.id } }));
+          } else {
+            const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
+            ({ data, etag } = await api(op.method, op.path, op.body, headers));
+          }
           this.rev = revOf(etag) ?? this.rev;
           this._reconcile(op, data);
           this.outbox = outboxRemove(this.outbox, op.qid);
@@ -445,7 +474,7 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
-    } else if (op.kind === 'message.send') {
+    } else if (op.kind === 'message.send' || op.kind === 'voice.send') {
       const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);
     }

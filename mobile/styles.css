@@ -260,3 +260,16 @@ textarea.cf-input { resize: vertical; }
 .cf-chat-composer.readonly { justify-content: center; color: var(--text-faint); font-size: 13px; padding: 14px; }
 .cf-chat-input { flex: 1; resize: none; min-height: 42px; max-height: 120px; font-size: 16px; }
 .cf-chat-send { flex-shrink: 0; width: 46px; height: 46px; border-radius: 50%; border: none; background: var(--accent); color: #1a1206; font-size: 18px; font-weight: 800; }
+
+/* ---- Chat voice + dictation ---- */
+.cf-bubble-voice { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.cf-audio { height: 34px; width: 200px; max-width: 60vw; }
+.cf-voice-dur { font-size: 11px; color: var(--text-faint); }
+.cf-chat-ico { flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); font-size: 18px; }
+.cf-chat-ico.on, .cf-chat-ico.rec:active { background: var(--red); color: #fff; border-color: var(--red); }
+.cf-chat-composer.recording { align-items: center; gap: 10px; }
+.cf-rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--red); animation: recpulse 1s ease-in-out infinite; }
+.cf-rec-lbl { font-weight: 700; color: var(--red); }
+.cf-rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-dim); margin-right: auto; }
+.cf-rec-cancel { flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text-dim); font-size: 16px; }
+@keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }

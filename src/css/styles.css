@@ -695,3 +695,15 @@ textarea.input { resize: vertical; font-family: inherit; }
 .msg-result { padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; cursor: pointer; }
 .msg-result:hover { background: var(--bg-3); }
 .msg-result-ch { font-size: 11px; font-weight: 700; color: var(--accent-2); margin-bottom: 4px; }
+
+/* ---- Voice notes + composer controls ---- */
+.msg-voice { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.msg-voice-ico { font-size: 13px; }
+.msg-audio { height: 32px; max-width: 240px; }
+.msg-voice-dur { font-size: 11px; color: var(--text-faint); }
+.btn.icon { padding: 7px 9px; font-size: 15px; line-height: 1; background: var(--bg-3); }
+.btn.icon.on { background: var(--red); color: #fff; border-color: var(--red); }
+.msg-composer.recording { gap: 10px; color: var(--text); }
+.msg-rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: recpulse 1s ease-in-out infinite; }
+.msg-rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--red); margin-right: auto; }
+@keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }

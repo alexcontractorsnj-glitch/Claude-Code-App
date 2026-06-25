@@ -637,6 +637,43 @@ class Store {
     return msg;
   }
 
+  // Playback URL for a voice note: a demo data-URL, or the server stream.
+  voiceSrc(msg) {
+    if (!msg || !msg.voice) return null;
+    return msg.voice.url || ('/api/voice/' + msg.voice.id);
+  }
+
+  // Send a voice note. `clip` = { mime, b64, dur }. Remote uploads the audio to
+  // /api/voice (kept out of /api/state) then posts a message referencing it;
+  // local/demo embeds the audio as a data-URL on the message.
+  async sendVoice(channelId, clip) {
+    const ch = this.channel(channelId);
+    if (!ch || !clip || !clip.b64) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const up = await api('POST', '/voice', { mime: clip.mime, data: clip.b64, dur: clip.dur });
+        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id } });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, {
+      channelId, authorId: this._uid(), authorName: this.user,
+      voice: { url: `data:${clip.mime};base64,${clip.b64}`, dur: clip.dur, mime: clip.mime },
+    });
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
     const at = new Date().toISOString();

@@ -38,6 +38,7 @@ export function makeMessage(existing, partial) {
     authorName: partial.authorName || 'Unknown',
     body: String(partial.body == null ? '' : partial.body).slice(0, MAX_BODY),
     attachments: Array.isArray(partial.attachments) ? partial.attachments : [],
+    voice: partial.voice || null,                   // { id, dur, mime } (audio served from /api/voice/:id) or { url, dur, mime } (demo data-URL)
     linkedTo: partial.linkedTo || null,             // { kind:'task'|'rfi'|'punch', id }
     createdAt: partial.createdAt || new Date().toISOString(),
     editedAt: null,

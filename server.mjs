@@ -40,6 +40,9 @@ const DATA_FILE = path.join(DATA_DIR, 'schedule.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.json');
 const AUDIT_CAP = 500;                          // keep the most recent N entries
+const VOICE_FILE = path.join(DATA_DIR, 'voice.json');
+const VOICE_CAP = 300;                           // keep the most recent N voice notes
+const MAX_VOICE_B64 = 1_400_000;                 // ~1MB of audio (≈ 45s opus) per note
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -53,6 +56,7 @@ const MIME = {
 let state;
 let users;                                    // [{ username, name, role, projects, passwordHash }]
 let audit = [];                               // append-only activity log (capped)
+let voice = {};                               // { id: { mime, data(base64), dur, by, at } } — audio blobs, kept out of /api/state
 let writeChain = Promise.resolve();           // serialize writes
 
 async function loadState() {
@@ -89,6 +93,16 @@ async function loadAudit() {
   }
   return [];
 }
+
+async function loadVoice() {
+  if (existsSync(VOICE_FILE)) {
+    try { const v = JSON.parse(await readFile(VOICE_FILE, 'utf8')); if (v && typeof v === 'object') return v; }
+    catch { /* corrupt → start fresh */ }
+  }
+  return {};
+}
+const persistVoice = () => persist(VOICE_FILE, voice);
+let voiceSeq = 0;
 
 // Append an immutable activity entry, attributed to the acting session user.
 let auditSeq = 0;
@@ -138,7 +152,7 @@ function send(res, code, payload, headers = {}) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on('data', (c) => { data += c; if (data.length > 2e6) req.destroy(); });   // headroom for voice-note uploads
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
     req.on('error', reject);
   });
@@ -507,6 +521,28 @@ async function handleApi(req, res, urlPath) {
       }
     }
 
+    if (resource === 'voice') {
+      if (method === 'POST' && !id) {                 // upload a voice note → { id, dur, mime }
+        const body = await readBody(req);
+        const data = String(body.data || '');
+        if (!data) return send(res, 400, { error: 'no audio data' });
+        if (data.length > MAX_VOICE_B64) return send(res, 413, { error: 'voice note too large (max ~45s)' });
+        const vid = 'v' + Date.now().toString(36) + (voiceSeq++).toString(36);
+        voice[vid] = { mime: typeof body.mime === 'string' ? body.mime : 'audio/webm', data, dur: Math.min(120, +body.dur || 0), by: actor.username, at: new Date().toISOString() };
+        const ids = Object.keys(voice);
+        if (ids.length > VOICE_CAP) ids.slice(0, ids.length - VOICE_CAP).forEach((k) => delete voice[k]);  // trim oldest
+        persistVoice();
+        return send(res, 201, { id: vid, dur: voice[vid].dur, mime: voice[vid].mime });
+      }
+      if (method === 'GET' && id) {                    // stream a voice note's audio
+        const v = voice[id];
+        if (!v) return send(res, 404, { error: 'voice note not found' });
+        const buf = Buffer.from(v.data, 'base64');
+        res.writeHead(200, { 'Content-Type': v.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000' });
+        return res.end(buf);
+      }
+    }
+
     if (resource === 'messages') {
       if (!Array.isArray(state.messages)) state.messages = [];
       if (method === 'POST' && !id) {                 // send a message to a channel
@@ -517,17 +553,19 @@ async function handleApi(req, res, urlPath) {
         if (ch.type === 'project' && !canEditProject(actor, ch.projectId)) {
           return send(res, 403, { error: 'you do not have access to that project' });
         }
+        const vref = body.voice && body.voice.id && voice[body.voice.id]
+          ? { id: body.voice.id, dur: voice[body.voice.id].dur, mime: voice[body.voice.id].mime } : null;
         const msg = makeMessage(state.messages, {
           channelId: ch.id, authorId: actor.username, authorName: actor.name,
           body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
-          linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+          voice: vref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
         });
-        if (!msg.body && !msg.attachments.length) return send(res, 400, { error: 'empty message' });
+        if (!msg.body && !msg.attachments.length && !msg.voice) return send(res, 400, { error: 'empty message' });
         state.messages.push(msg);
         state.messages = capChannel(state.messages, ch.id);
         state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
         bump(); await persistState();
-        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.body.slice(0, 80) });
+        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.body.slice(0, 80) });
         return send(res, 201, msg, { ETag: etag() });
       }
     }
@@ -629,6 +667,7 @@ const server = http.createServer(async (req, res) => {
 state = await loadState();
 users = await loadUsers();
 audit = await loadAudit();
+voice = await loadVoice();
 server.listen(PORT, () => {
   console.log(`\n  BuildFlow ERP Schedule  →  http://localhost:${PORT}`);
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);

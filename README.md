@@ -70,6 +70,10 @@ the research (WhatsApp/Slack/Procore) behind the design.
 - **Corefield — 💬 Chat tab:** WhatsApp-style bubbles with delivery ticks, day
   separators, unread badges, and **offline send** (messages queue in the outbox
   and replay on reconnect, just like every other field write).
+- **🎤 Voice notes + dictation:** record a voice note in either app (MediaRecorder
+  → uploaded to `POST /api/voice`, streamed back from `GET /api/voice/:id` so
+  audio never bloats the polled state; capped ~45s, demo mode embeds it locally),
+  or tap the 🎙 mic to **dictate** a message via on-device speech-to-text.
 - **Shared, tested core** (`src/js/messaging.js`): channels, messages, unread
   counts, `@mention` parsing, search, and a per-channel **cap** (last 200) that
   keeps the zero-DB JSON store bounded. Every send is **audited**

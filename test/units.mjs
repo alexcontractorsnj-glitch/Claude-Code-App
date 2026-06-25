@@ -178,6 +178,9 @@ ok(capped.length === MSG_CAP, 'capChannel trims to MSG_CAP');
 ok(capped[0].body === 'm5', 'capChannel keeps the most recent');
 ok(searchMessages(msgs, 'REPLY').length === 1 && searchMessages(msgs, 'U One').length === 1, 'searchMessages by body + author');
 ok(seedChannels(seed.projects).length === 3 && makeChannel({ projectId: 'pz' }).type === 'project', 'seedChannels/makeChannel');
+const vmsg = makeMessage([], { channelId: ch1, body: '', voice: { id: 'v1', dur: 7, mime: 'audio/webm' } });
+ok(vmsg.voice && vmsg.voice.id === 'v1' && vmsg.voice.dur === 7, 'message carries a voice ref');
+ok(makeMessage([], { channelId: ch1, body: 'hi' }).voice === null, 'non-voice message has null voice');
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} units: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

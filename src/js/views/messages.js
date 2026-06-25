@@ -8,8 +8,19 @@
 import { store, Dates } from '../data.js';
 import { el, clear } from '../utils.js';
 import { searchMessages, parseMentions } from '../messaging.js';
+import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../voice.js';
 
-const view = { channelId: null, search: '' };
+const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0 };
+
+// Inline audio player for a voice-note message.
+function voiceEl(m) {
+  if (!m.voice) return null;
+  return el('div', { class: 'msg-voice' }, [
+    el('span', { class: 'msg-voice-ico' }, '🎤'),
+    el('audio', { class: 'msg-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
+    el('span', { class: 'msg-voice-dur' }, fmtDur(m.voice.dur)),
+  ]);
+}
 
 function initials(name) {
   return String(name || '?').split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
@@ -111,7 +122,8 @@ export function renderMessages(mount, ctx) {
             el('span', { class: 'msg-avatar' }, initials(m.authorName)),
             el('div', {}, [
               el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, dayOf(m.createdAt) + ' · ' + timeOf(m.createdAt))]),
-              el('div', { class: 'msg-body' }, bodyNodes(m.body)),
+              m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,
+              voiceEl(m),
             ]),
           ]),
         ]));
@@ -131,7 +143,8 @@ export function renderMessages(mount, ctx) {
         el('span', { class: 'msg-avatar' }, initials(m.authorName)),
         el('div', { class: 'msg-bubble-wrap' }, [
           el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, timeOf(m.createdAt))]),
-          el('div', { class: 'msg-body' }, bodyNodes(m.body)),
+          m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,
+          voiceEl(m),
         ]),
       ]));
     });
@@ -142,7 +155,26 @@ export function renderMessages(mount, ctx) {
   // ---- composer ----
   if (channel && !view.search.trim()) {
     const canPost = store.canPost(channel.id);
-    if (canPost) {
+    if (canPost && view.rec) {
+      // Recording bar (active voice note).
+      const timeLbl = el('span', { class: 'msg-rec-time' }, '0:00');
+      if (view.recInt) clearInterval(view.recInt);
+      view.recSec = view.rec.elapsed();
+      timeLbl.textContent = fmtDur(view.recSec);
+      view.recInt = setInterval(() => { view.recSec += 1; timeLbl.textContent = fmtDur(view.recSec); }, 1000);
+      const stopRec = (sendIt) => async () => {
+        clearInterval(view.recInt); view.recInt = null;
+        const r = view.rec; view.rec = null;
+        if (sendIt) { const clip = await r.stop(); if (clip && clip.b64) store.sendVoice(channel.id, clip); }
+        else r.cancel();
+        rerender();
+      };
+      main.appendChild(el('div', { class: 'msg-composer recording' }, [
+        el('span', { class: 'msg-rec-dot' }), el('span', {}, 'Recording voice note'), timeLbl,
+        el('button', { class: 'btn sm ghost', onclick: stopRec(false) }, 'Cancel'),
+        el('button', { class: 'btn primary sm', onclick: stopRec(true) }, '⏹ Send'),
+      ]));
+    } else if (canPost) {
       const ta = el('textarea', { class: 'input msg-input', rows: '1', placeholder: `Message ${channel.name}…  (@name to mention)` });
       const send = () => {
         const text = ta.value.trim();
@@ -153,7 +185,22 @@ export function renderMessages(mount, ctx) {
         setTimeout(() => { const t = mount.querySelector('.msg-input'); if (t) t.focus(); }, 0);
       };
       ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-      main.appendChild(el('div', { class: 'msg-composer' }, [ta, el('button', { class: 'btn primary', onclick: send }, 'Send')]));
+      const controls = [];
+      if (supportsDictation()) {
+        let dict = null;
+        const micBtn = el('button', { class: 'btn icon', title: 'Dictate' }, '🎙');
+        micBtn.onclick = () => {
+          if (dict) { dict.stop(); dict = null; micBtn.classList.remove('on'); return; }
+          const base = ta.value ? ta.value + ' ' : '';
+          dict = startDictation((final, interim) => { ta.value = base + final + interim; }, () => { dict = null; micBtn.classList.remove('on'); });
+          if (dict) micBtn.classList.add('on');
+        };
+        controls.push(micBtn);
+      }
+      if (supportsRecording()) {
+        controls.push(el('button', { class: 'btn icon', title: 'Voice note', onclick: async () => { try { view.rec = await startRecording(); rerender(); } catch { store && store._notify && store._notify('Microphone unavailable.', 'warn'); } } }, '🎤'));
+      }
+      main.appendChild(el('div', { class: 'msg-composer' }, [...controls, ta, el('button', { class: 'btn primary', onclick: send }, 'Send')]));
     } else {
       main.appendChild(el('div', { class: 'msg-composer readonly' }, store.can('write')
         ? 'You don’t have posting access to this project — monitoring only.'
