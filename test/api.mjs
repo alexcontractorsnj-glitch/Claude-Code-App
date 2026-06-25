@@ -203,6 +203,9 @@ try {
   ok(askState.messages.some((m) => m.authorId === 'dispatcher' && m.linkedTo && m.linkedTo.id === 't4'), 'dispatcher reply lands in the same task thread (no @mention needed)');
   ok((await http('POST', '/api/dispatcher/ask', { taskId: 'nope', text: 'x' })).status === 404, 'ask on missing task → 404');
   ok((await http('POST', '/api/dispatcher/ask', { taskId: 't4', text: '' })).status === 400, 'empty ask → 400');
+  const health = await http('GET', '/api/dispatcher/health');
+  ok(health.status === 200 && typeof health.data.keyed === 'boolean' && health.data.model && health.data.hint, 'dispatcher health reports keyed/model/hint (no secret)');
+  ok(!JSON.stringify(health.data).includes(process.env.ANTHROPIC_API_KEY || '___none___'), 'health never leaks the key');
 
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');

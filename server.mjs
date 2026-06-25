@@ -232,19 +232,27 @@ function runDispatcherScan() {
   return n;
 }
 
+let lastClaudeError = null;                    // surfaced to users so silent AI failures are diagnosable
+const DISPATCHER_MODEL = () => process.env.DISPATCHER_MODEL || 'claude-opus-4-8';
+
 async function callClaude(system, messages) {
   const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  const model = process.env.DISPATCHER_MODEL || 'claude-opus-4-8';
+  if (!key) { lastClaudeError = 'no-key'; return null; }
   try {
     const res = await fetch((process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com') + '/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: 1024, system, tools: DISPATCHER_TOOLS, messages }),
+      body: JSON.stringify({ model: DISPATCHER_MODEL(), max_tokens: 1024, system, tools: DISPATCHER_TOOLS, messages }),
     });
-    if (!res.ok) { console.error('dispatcher: Claude HTTP', res.status, (await res.text()).slice(0, 200)); return null; }
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 200);
+      console.error('dispatcher: Claude HTTP', res.status, detail);
+      lastClaudeError = `http-${res.status}`;          // 401 = bad key, 404 = model not available, 429 = rate limited
+      return null;
+    }
+    lastClaudeError = null;
     return await res.json();
-  } catch (e) { console.error('dispatcher: Claude error', e.message); return null; }
+  } catch (e) { console.error('dispatcher: Claude error', e.message); lastClaudeError = 'network'; return null; }
 }
 
 // A plain text completion (no tools) — used to enrich deterministic output like
@@ -352,7 +360,15 @@ async function dispatcherReply(channel, actor, linkedTo = null) {
       messages.push({ role: 'user', content: toolUses.map((tu) => ({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(execDispatcherTool(tu.name, tu.input, actor)) })) });
     }
   } catch (e) { console.error('dispatcher: agent', e.message); }
-  return postDispatcher(channel, text || fallbackBrief(state, channel.projectId), 'reply', linkedTo);
+  if (text) return postDispatcher(channel, text, 'reply', linkedTo);
+  // No AI text — say WHY, so a silent dispatcher is diagnosable instead of just
+  // posting a generic digest that looks like it ignored the question.
+  const why = lastClaudeError === 'http-401' ? '\n\n_(The Claude API key was rejected — check ANTHROPIC_API_KEY in Render.)_'
+    : lastClaudeError === 'http-404' ? `\n\n_(Model “${DISPATCHER_MODEL()}” isn’t available on this key — set DISPATCHER_MODEL to one you have access to.)_`
+    : lastClaudeError === 'http-429' ? '\n\n_(Claude API rate-limited — try again in a moment.)_'
+    : lastClaudeError === 'network' ? '\n\n_(Couldn’t reach the Claude API from the server.)_'
+    : '\n\n_(AI offline — set ANTHROPIC_API_KEY for the full assistant.)_';
+  return postDispatcher(channel, fallbackBrief(state, channel.projectId) + why, 'reply', linkedTo);
 }
 
 // --- HTTP helpers -----------------------------------------------------------
@@ -986,6 +1002,18 @@ async function handleApi(req, res, urlPath) {
     if (resource === 'dispatcher' && method === 'POST' && id === 'scan') {
       const n = runDispatcherScan();
       return send(res, 200, { posted: n }, { ETag: etag() });
+    }
+    // Diagnostic: is the AI actually wired up? Never returns the key itself —
+    // just whether one is present, the model, and the last call's failure (if any).
+    if (resource === 'dispatcher' && method === 'GET' && id === 'health') {
+      return send(res, 200, {
+        keyed: !!process.env.ANTHROPIC_API_KEY,
+        model: DISPATCHER_MODEL(),
+        lastError: lastClaudeError,                  // null = ok / never called; 'http-401' = bad key; etc.
+        hint: !process.env.ANTHROPIC_API_KEY
+          ? 'ANTHROPIC_API_KEY is NOT set on the server — set it in Render → Environment and redeploy.'
+          : 'Key is present. If the AI is still silent, lastError tells you why (http-401 = bad key, http-404 = model not available).',
+      });
     }
     // Direct chat with the agent — always answers (no @mention needed). Anchors
     // to a task thread when taskId is given, else to a project channel.
