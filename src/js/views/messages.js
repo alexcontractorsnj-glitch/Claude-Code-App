@@ -9,6 +9,7 @@ import { store, Dates } from '../data.js';
 import { el, clear } from '../utils.js';
 import { searchMessages, parseMentions } from '../messaging.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../voice.js';
+import { callsSupported } from '../webrtc.js';
 
 const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0 };
 
@@ -88,6 +89,18 @@ export function renderMessages(mount, ctx) {
         ]),
       ]);
     }) : [el('div', { class: 'empty' }, 'No channels for this project.')]),
+    el('div', { class: 'msg-people' }, [
+      el('div', { class: 'msg-people-h' }, `People online · ${store.peopleOnline().length}`),
+      ...store.peopleOnline().map((p) => el('div', { class: 'msg-person' }, [
+        el('span', { class: 'msg-person-dot' }),
+        el('span', { class: 'msg-person-name' }, p.name),
+        callsSupported() ? el('div', { class: 'msg-person-call' }, [
+          el('button', { class: 'icon-btn', title: 'Audio call', onclick: () => store.callPeer(p, false).catch(() => store._notify('Mic unavailable.', 'warn')) }, '📞'),
+          el('button', { class: 'icon-btn', title: 'Video call', onclick: () => store.callPeer(p, true).catch(() => store._notify('Camera unavailable.', 'warn')) }, '🎥'),
+        ]) : null,
+      ])),
+      store.peopleOnline().length ? null : el('div', { class: 'msg-person-none' }, 'No one else online'),
+    ]),
   ]);
 
   // ---- main: conversation or search results ----

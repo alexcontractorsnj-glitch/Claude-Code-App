@@ -14,6 +14,7 @@ import { el, clear } from '../src/js/utils.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../src/js/voice.js';
+import { callsSupported } from '../src/js/webrtc.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -400,6 +401,19 @@ function renderChat(main) {
       ]),
     ]));
   });
+
+  const people = store.peopleOnline();
+  main.appendChild(el('div', { class: 'cf-sec' }, [el('span', { class: 'cf-sec-dot good' }), 'People online', el('span', { class: 'cf-sec-n' }, String(people.length))]));
+  if (!people.length) main.appendChild(el('div', { class: 'cf-empty', style: { padding: '14px' } }, 'No one else online.'));
+  people.forEach((p) => {
+    main.appendChild(el('div', { class: 'cf-card flat' }, [
+      el('div', { class: 'cf-card-body' }, [el('div', { class: 'cf-card-top' }, [el('span', { class: 'cf-person-dot' }), el('div', { class: 'cf-card-name' }, p.name)])]),
+      callsSupported() ? el('div', { class: 'cf-person-call' }, [
+        el('button', { class: 'cf-call-ico', onclick: () => store.callPeer(p, false).catch(() => store.notify('Mic unavailable.', 'warn')) }, '📞'),
+        el('button', { class: 'cf-call-ico', onclick: () => store.callPeer(p, true).catch(() => store.notify('Camera unavailable.', 'warn')) }, '🎥'),
+      ]) : null,
+    ]));
+  });
 }
 
 function renderConversation(main, channelId) {
@@ -602,11 +616,51 @@ function renderShell(authState) {
   if (!built) buildShell(); else render();
 }
 
+// --- call overlay (1:1 audio/video) -----------------------------------------
+let callRoot = null, vLocal = null, vRemote = null;
+const callInit = (n) => String(n || '?').split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+
+function renderCallUI(s) {
+  if (!s || s.state === 'idle') { if (callRoot) { callRoot.remove(); callRoot = null; vLocal = vRemote = null; } return; }
+  if (!callRoot) { callRoot = el('div', { class: 'cf-call' }); document.body.appendChild(callRoot); }
+  if (!vRemote) vRemote = el('video', { class: 'cf-call-remote', autoplay: '', playsinline: '' });
+  if (!vLocal) { vLocal = el('video', { class: 'cf-call-local', autoplay: '', playsinline: '' }); vLocal.muted = true; }
+  if (vRemote.srcObject !== (s.remote || null)) vRemote.srcObject = s.remote || null;
+  if (vLocal.srcObject !== (s.local || null)) vLocal.srcObject = s.local || null;
+  clear(callRoot);
+  const c = store.calls;
+  const name = (s.peer && s.peer.name) || 'Caller';
+  const face = el('div', { class: 'cf-call-face' }, [el('div', { class: 'cf-call-avatar' }, callInit(name)), el('div', { class: 'cf-call-name' }, name)]);
+
+  if (s.state === 'ringing') {
+    callRoot.append(face, el('div', { class: 'cf-call-sub' }, `Incoming ${s.video ? 'video' : 'audio'} call`),
+      el('div', { class: 'cf-call-actions' }, [
+        el('button', { class: 'cf-call-btn decline', onclick: () => c.decline() }, '✕'),
+        el('button', { class: 'cf-call-btn accept', onclick: () => c.accept().catch(() => store.notify('Mic/camera unavailable.', 'warn')) }, '✓'),
+      ]));
+    return;
+  }
+  if (s.state === 'calling' || s.state === 'ended') {
+    callRoot.append(face, el('div', { class: 'cf-call-sub' }, s.state === 'ended' ? 'Call ended' : 'Calling…'),
+      s.state === 'calling' ? el('div', { class: 'cf-call-actions' }, [el('button', { class: 'cf-call-btn decline', onclick: () => c.hangup() }, '✕')]) : null);
+    return;
+  }
+  // connected
+  if (s.video) { callRoot.appendChild(vRemote); callRoot.appendChild(vLocal); }
+  else callRoot.appendChild(el('div', { class: 'cf-call-face big' }, [el('div', { class: 'cf-call-avatar' }, callInit(name)), el('div', { class: 'cf-call-name' }, name), el('div', { class: 'cf-call-sub' }, 'On call')]));
+  callRoot.appendChild(el('div', { class: 'cf-call-bar' }, [
+    el('button', { class: 'cf-call-ctl' + (s.muted ? ' on' : ''), onclick: () => c.toggleMute() }, s.muted ? '🔇' : '🎙'),
+    s.video ? el('button', { class: 'cf-call-ctl' + (s.cameraOff ? ' on' : ''), onclick: () => c.toggleCamera() }, '📷') : null,
+    el('button', { class: 'cf-call-ctl hangup', onclick: () => c.hangup() }, '📞'),
+  ]));
+}
+
 // --- boot -------------------------------------------------------------------
 function boot() {
   root = document.getElementById('cf-app');
   store.onAuth((authState) => renderShell(authState));
   store.subscribe(() => render());
+  store.onCall((snap) => renderCallUI(snap));
   store.onNotice((msg, tone = 'info') => {
     const stack = document.querySelector('.cf-toasts');
     if (!stack) return;

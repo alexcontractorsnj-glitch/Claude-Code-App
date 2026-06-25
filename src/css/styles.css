@@ -736,3 +736,31 @@ textarea.input { resize: vertical; font-family: inherit; }
 /* ---- Live presence + typing ---- */
 .msg-presence { font-size: 11px; font-weight: 700; color: var(--green); margin-left: auto; margin-right: 8px; }
 .msg-typing { font-size: 12px; font-style: italic; color: var(--text-faint); padding: 2px 16px 6px; }
+
+/* ---- People online (call) ---- */
+.msg-people { border-top: 1px solid var(--line); padding: 10px 12px; max-height: 38%; overflow-y: auto; }
+.msg-people-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; color: var(--text-faint); margin-bottom: 8px; }
+.msg-person { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.msg-person-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.msg-person-name { flex: 1; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg-person-call { display: flex; gap: 4px; }
+.msg-person-none { font-size: 12px; color: var(--text-faint); }
+
+/* ---- Call overlay ---- */
+.call-ui { position: fixed; inset: 0; z-index: 1000; background: rgba(8,10,14,.92); backdrop-filter: blur(8px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
+.call-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px; padding: 32px 40px; display: flex; flex-direction: column; align-items: center; gap: 12px; box-shadow: var(--shadow); }
+.call-avatar { width: 84px; height: 84px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #d9821a); color: #1a1206; display: grid; place-items: center; font-size: 30px; font-weight: 800; }
+.call-name { font-size: 21px; font-weight: 800; }
+.call-sub { font-size: 14px; color: var(--text-dim); }
+.call-actions { display: flex; gap: 14px; margin-top: 8px; }
+.call-btn { border: none; padding: 12px 22px; border-radius: 24px; font-weight: 800; font-size: 14px; color: #fff; }
+.call-btn.accept { background: var(--green); } .call-btn.decline { background: var(--red); }
+.call-stage { position: relative; width: min(92vw, 1000px); height: min(70vh, 640px); background: #000; border-radius: 16px; overflow: hidden; display: grid; place-items: center; }
+.call-stage.audio { background: var(--bg-2); }
+.call-remote { width: 100%; height: 100%; object-fit: cover; background: #000; }
+.call-local { position: absolute; right: 14px; bottom: 14px; width: 180px; max-width: 32%; border-radius: 12px; border: 2px solid var(--line); object-fit: cover; background: #111; transform: scaleX(-1); }
+.call-audioface { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.call-bar { display: flex; gap: 16px; }
+.call-ctl { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); font-size: 22px; }
+.call-ctl.on { background: var(--accent); color: #1a1206; }
+.call-ctl.hangup { background: var(--red); color: #fff; border-color: var(--red); transform: rotate(135deg); }

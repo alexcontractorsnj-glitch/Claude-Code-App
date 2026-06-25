@@ -23,6 +23,7 @@ const SHELL = [
   '../src/js/messaging.js',
   '../src/js/deliveries.js',
   '../src/js/voice.js',
+  '../src/js/webrtc.js',
 ];
 
 self.addEventListener('install', (event) => {

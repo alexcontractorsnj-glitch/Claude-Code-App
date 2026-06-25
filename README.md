@@ -91,6 +91,18 @@ with **online presence** and **"typing…"** indicators riding the same stream.
 **ETag polling stays as the fallback** (and the static GitHub Pages demo, which
 has no server, runs chat in local mode on the seeded channels).
 
+**📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
+online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
+peer-to-peer **WebRTC**, with offer/answer/ICE **signaled over the same SSE
+stream** (`POST /api/signal` relays to the target user; no media touches the
+server) and public **STUN** for NAT traversal. Ring → accept/decline → in-call
+with mute, camera toggle, and hang-up, on desktop and phone.
+
+> **Honest limitation:** there's **no TURN relay** (paid infra), so calls connect
+> on the same network and most home/office NATs, but **very restrictive or
+> symmetric-NAT networks won't connect** — adding a TURN server is the production
+> fix. The signaling + UI are built so that's a config change, not a rewrite.
+
 ## 🤖 AI Dispatcher
 
 The **Dispatcher** is an AI agent that watches the field and acts on it. It posts
@@ -487,7 +499,10 @@ zero total float are flagged), not hard-coded.
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
 
-**Done recently:** ✅ **Team messaging** — per-project channels with a web
+**Done recently:** ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
+channel, STUN) · ✅ **Real-time SSE** (instant delivery + presence + typing) ·
+✅ **AI Dispatcher** (Claude tool-use agent + deliveries, proactive alerts) ·
+✅ **Voice notes + dictation** · ✅ **Team messaging** — per-project channels with a web
 communication monitor (search + CSV export) and a Corefield Chat tab (bubbles,
 ticks, offline send), server-persistent + audited · ✅ **Corefield mobile field
 app** — installable PWA (Work / Punch / Reports), offline outbox with

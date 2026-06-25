@@ -13,6 +13,7 @@ import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
   messagesForChannel, lastMessage, channelIdForProject,
 } from '../src/js/messaging.js';
+import { CallManager } from '../src/js/webrtc.js';
 import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
   outboxAdd, outboxRemove, outboxSummary,
@@ -88,9 +89,11 @@ class MobileStore {
     this.state = normalizeState(lsGet(LS_STATE, null) || { tasks: [] });
     this.outbox = lsGet(LS_OUTBOX, []);
     this.projectId = lsGet(LS_PROJECT, 'all');
-    this.onlineUsers = new Set();      // SSE presence
+    this.onlineUsers = [];             // [{username,name}] SSE presence
     this.typing = {};                  // { channelId: { name: expiryMs } }
     this._es = null;                   // EventSource (live stream)
+    this.callListeners = new Set();
+    this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this._setOnline(true));
@@ -259,11 +262,19 @@ class MobileStore {
     if (this._es || this.local || typeof EventSource === 'undefined') return;
     try { this._es = new EventSource(API + '/stream'); } catch { return; }
     this._es.addEventListener('sync', (e) => { try { if (JSON.parse(e.data).rev !== this.rev) this._pull(); } catch { /* ignore */ } });
-    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = new Set(JSON.parse(e.data).online || []); this.listeners.forEach((fn) => fn()); } catch { /* ignore */ } });
+    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = JSON.parse(e.data).online || []; this.listeners.forEach((fn) => fn()); } catch { /* ignore */ } });
     this._es.addEventListener('typing', (e) => { try { const d = JSON.parse(e.data); if (d.user !== this.username) this._setTyping(d.channelId, d.name); } catch { /* ignore */ } });
+    this._es.addEventListener('call', (e) => { try { this.calls.handleSignal(JSON.parse(e.data)); } catch { /* ignore */ } });
     this._es.onerror = () => { /* auto-reconnects; polling covers gaps */ };
   }
-  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = new Set(); }
+  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = []; }
+
+  // ---- calls (1:1 audio/video) ----
+  _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
+  onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
+  callPeer(peer, video) { return this.calls.call(peer, video); }
+  peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
+  onlineCount() { return this.onlineUsers.length; }
   _pull() {
     if (this._pulling || this.local) return;
     this._pulling = true;

@@ -23,6 +23,7 @@ import {
   messagesForChannel, lastMessage, channelIdForProject,
 } from './messaging.js';
 import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
+import { CallManager } from './webrtc.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -82,9 +83,11 @@ class Store {
     this.role = null;             // server role when authenticated
     this.scope = [];              // project scope ([] = all / unrestricted)
     this.user = this._loadUser(); // display name (local identity, or session user)
-    this.onlineUsers = new Set(); // usernames currently connected (SSE presence)
+    this.onlineUsers = [];        // [{username,name}] currently connected (SSE presence)
     this.typing = {};             // { channelId: { name: expiryMs } }
     this._es = null;              // EventSource (live stream)
+    this.callListeners = new Set();
+    this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
   }
@@ -243,11 +246,18 @@ class Store {
     if (this._es || typeof EventSource === 'undefined') return;
     try { this._es = new EventSource(API + '/stream'); } catch { return; }
     this._es.addEventListener('sync', (e) => { try { if (JSON.parse(e.data).rev !== this.rev) this._pull(); } catch { /* ignore */ } });
-    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = new Set(JSON.parse(e.data).online || []); this.listeners.forEach((fn) => fn(this.state)); } catch { /* ignore */ } });
+    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = JSON.parse(e.data).online || []; this.listeners.forEach((fn) => fn(this.state)); } catch { /* ignore */ } });
     this._es.addEventListener('typing', (e) => { try { const d = JSON.parse(e.data); if (d.user !== this.username) this._setTyping(d.channelId, d.name); } catch { /* ignore */ } });
+    this._es.addEventListener('call', (e) => { try { this.calls.handleSignal(JSON.parse(e.data)); } catch { /* ignore */ } });
     this._es.onerror = () => { /* EventSource auto-reconnects; polling covers gaps */ };
   }
-  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = new Set(); }
+  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = []; }
+
+  // ---- calls (1:1 audio/video) ----
+  _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
+  onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
+  callPeer(peer, video) { return this.calls.call(peer, video); }
+  peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
 
   _pull() {
     if (this._pulling || this.mode !== 'remote') return;
@@ -289,7 +299,7 @@ class Store {
     this._lastTyping = now;
     if (this.mode === 'remote') api('POST', '/channels/' + channelId + '/typing').catch(() => {});
   }
-  onlineCount() { return this.onlineUsers.size; }
+  onlineCount() { return this.onlineUsers.length; }
 
   // Poll the server; only re-hydrate when the global rev advances past ours
   // (i.e. another client wrote). Cheap: 304 Not Modified when nothing changed.

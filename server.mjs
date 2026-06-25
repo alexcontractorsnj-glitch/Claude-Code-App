@@ -151,8 +151,17 @@ function sseSend(client, event, data) {
   catch { sse.delete(client); }
 }
 function sseBroadcast(event, data) { for (const c of [...sse]) sseSend(c, event, data); }
+function sseToUser(username, event, data) {
+  let n = 0;
+  for (const c of [...sse]) if (c.user.username === username) { sseSend(c, event, data); n += 1; }
+  return n;
+}
 function sseNotify() { sseBroadcast('sync', { rev: state.rev || 0 }); }
-const onlineUsers = () => [...new Set([...sse].map((c) => c.user.username))];
+function onlineUsers() {
+  const seen = new Map();
+  for (const c of sse) if (!seen.has(c.user.username)) seen.set(c.user.username, { username: c.user.username, name: c.user.name });
+  return [...seen.values()];
+}
 function broadcastPresence() { sseBroadcast('presence', { online: onlineUsers() }); }
 
 // Edit attribution comes from the authenticated session — it can't be spoofed
@@ -410,7 +419,8 @@ async function handleApi(req, res, urlPath) {
     const adminOnly = resource === 'reset' || resource === 'users';
     // Marking a channel read or sending a typing ping is a per-user, ephemeral
     // signal — allowed for any signed-in user (incl. read-only monitors).
-    const ephemeral = resource === 'channels' && (sub === 'read' || sub === 'typing') && method === 'POST';
+    const ephemeral = (resource === 'channels' && (sub === 'read' || sub === 'typing') && method === 'POST')
+      || (resource === 'signal' && method === 'POST');
     if (adminOnly && !can(actor.role, 'admin')) return send(res, 403, { error: 'admin privilege required' });
     if (isWrite && !adminOnly && !ephemeral && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required (read-only role)' });
@@ -442,6 +452,18 @@ async function handleApi(req, res, urlPath) {
     if (resource === 'channels' && method === 'POST' && id && sub === 'typing') {
       if ((state.channels || []).some((c) => c.id === id)) sseBroadcast('typing', { channelId: id, user: actor.username, name: actor.name });
       return send(res, 204, null);
+    }
+
+    // WebRTC call signaling — relay offer/answer/ICE/end to the target user's
+    // live streams. The server is a dumb relay (no media passes through it).
+    if (resource === 'signal' && method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      if (!body.to || !body.type) return send(res, 400, { error: 'to and type are required' });
+      const delivered = sseToUser(body.to, 'call', {
+        type: body.type, from: actor.username, fromName: actor.name,
+        sdp: body.sdp, candidate: body.candidate, video: body.video,
+      });
+      return send(res, 200, { delivered });
     }
 
     if (resource === 'users') {
