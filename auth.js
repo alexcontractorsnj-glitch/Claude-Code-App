@@ -52,32 +52,47 @@ export async function seedUsers() {
   ];
 }
 
-// --- Sessions (in-memory; cleared on restart) ------------------------------
-const sessions = new Map();   // token -> { username, name, role, expires }
+// --- Sessions (STATELESS, HMAC-signed) -------------------------------------
+// A session is a signed token `payload.signature`, not a server-side row, so it
+// SURVIVES server restarts / redeploys / free-tier sleep — the #1 cause of
+// "it keeps logging me out / disconnecting" on ephemeral hosting. Set
+// SESSION_SECRET in the environment (Render can generate + persist one) to keep
+// the secret stable across restarts; without it a random per-boot secret is
+// used and sessions reset on restart, exactly as the old in-memory map did.
+const SECRET = (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16)
+  ? process.env.SESSION_SECRET
+  : crypto.randomBytes(32).toString('hex');
+
+const sign = (data) => crypto.createHmac('sha256', SECRET).update(data).digest('base64url');
 
 export function createSession(user) {
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, {
-    username: user.username, name: user.name, role: user.role,
-    projects: Array.isArray(user.projects) ? user.projects : [],
-    expires: Date.now() + SESSION_TTL_MS,
-  });
-  return token;
+  const payload = Buffer.from(JSON.stringify({ u: user.username, e: Date.now() + SESSION_TTL_MS })).toString('base64url');
+  return payload + '.' + sign(payload);
 }
 
-export function getSession(token) {
-  const s = token && sessions.get(token);
-  if (!s) return null;
-  if (s.expires < Date.now()) { sessions.delete(token); return null; }
-  return s;
+// Verify signature + expiry, then resolve the LIVE user via `findUser` so role/
+// scope changes apply immediately and a deleted user is locked out at once
+// (findUser returns undefined → null). No server-side state to lose on restart.
+export function getSession(token, findUser) {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.indexOf('.');
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const sig = Buffer.from(token.slice(dot + 1));
+  const expected = Buffer.from(sign(payload));
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(sig, expected)) return null;
+  let data;
+  try { data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { return null; }
+  if (!data || !data.u || !data.e || data.e < Date.now()) return null;
+  const user = typeof findUser === 'function' ? findUser(data.u) : null;
+  if (!user) return null;
+  return { username: user.username, name: user.name, role: user.role, projects: Array.isArray(user.projects) ? user.projects : [] };
 }
 
-export function destroySession(token) { if (token) sessions.delete(token); }
-
-// Drop every session belonging to a user (e.g. after delete / role change).
-export function destroyUserSessions(username) {
-  for (const [tok, s] of sessions) if (s.username === username) sessions.delete(tok);
-}
+// Stateless tokens can't be revoked server-side; logout clears the cookie
+// client-side, and role/delete changes take effect via the live lookup above.
+export function destroySession() { /* no-op (stateless) */ }
+export function destroyUserSessions() { /* no-op (stateless) */ }
 
 // --- Login throttle (per username) -----------------------------------------
 const attempts = new Map();   // username -> { fails, until }

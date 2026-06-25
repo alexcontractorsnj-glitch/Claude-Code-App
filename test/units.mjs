@@ -257,6 +257,17 @@ ok(mr.tasks === 2 && mr.ready === 1 && mr.percent === 50, 'madeReady: t8 ready, 
 ok(madeReady([], 'p1').percent === null, 'madeReady null when no constraints');
 ok(isOpenConstraint(cl[0]) && !isOpenConstraint(cl[1]), 'isOpenConstraint');
 
+section('stateless sessions (survive restart)');
+const auth = await import('../auth.js');
+const findAdmin = (u) => (u === 'admin' ? { username: 'admin', name: 'Admin', role: 'admin', projects: [] } : null);
+const tok = auth.createSession({ username: 'admin', name: 'Admin', role: 'admin', projects: [] });
+ok(typeof tok === 'string' && tok.includes('.'), 'createSession returns a signed token');
+ok(auth.getSession(tok, findAdmin)?.username === 'admin', 'valid token resolves the live user');
+ok(auth.getSession(tok, () => null) === null, 'deleted user (findUser → null) is locked out');
+ok(auth.getSession(tok + 'x', findAdmin) === null, 'tampered signature rejected');
+ok(auth.getSession('garbage', findAdmin) === null && auth.getSession('', findAdmin) === null, 'malformed token rejected');
+ok(auth.getSession(tok, findAdmin)?.role === 'admin', 'role comes from the LIVE user, not the token');
+
 section('agent speech (TTS)');
 const { speakable } = await import('../src/js/speech.js');
 ok(speakable('🤖 Footing RFI-001 is overdue — chase the EOR.').includes('Footing RFI-001 is overdue'), 'speakable keeps the words');

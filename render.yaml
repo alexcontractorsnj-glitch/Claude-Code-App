@@ -20,3 +20,6 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false        # set this secret in the Render dashboard, not in git
+      - key: SESSION_SECRET
+        generateValue: true  # Render generates once + keeps it stable across deploys,
+                             # so logins survive restarts/sleep (no repeated logout)

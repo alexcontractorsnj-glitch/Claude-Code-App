@@ -390,7 +390,7 @@ function readBody(req) {
 // Resolve the authenticated user for a request from its session cookie.
 function actorOf(req) {
   const token = parseCookies(req)[COOKIE];
-  return getSession(token);
+  return getSession(token, (username) => users.find((u) => u.username === username));
 }
 
 // --- Auth routes (no session required for login) ---------------------------
