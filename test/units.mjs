@@ -21,6 +21,7 @@ const { makeReport, reportsFor } = await import('../src/js/fieldreports.js');
 const { makeDoc, nextDocNumber, isOpen, overdueDocs } = await import('../src/js/docs.js');
 const { makePunchItem, closeoutSummary, isOpenPunch, cleanAttachments } = await import('../src/js/punch.js');
 const { computeAlerts, alertSummary } = await import('../src/js/alerts.js');
+const { bucketTasks, workSummary, stepProgress, coerceStatus, outboxAdd, outboxRemove, outboxSummary, applyPendingTasks, dueLabel } = await import('../src/mobile/core.js');
 
 section('seed + dates');
 const seed = seedState();
@@ -113,6 +114,44 @@ ok(al.some((a) => a.type === 'milestone-overdue' || a.type === 'overdue'), 'aler
 ok(al.some((a) => a.type === 'rfi-overdue'), 'alerts include overdue RFI');
 ok(al.some((a) => a.type === 'punch-high'), 'alerts include high-priority punch');
 ok(alertSummary(al).total === al.length, 'alert summary total');
+
+section('corefield mobile (field core)');
+const today = Dates.today();
+const cfTasks = [
+  { id: 'a', milestone: false, status: 'in-progress', start: Dates.addDays(today, -5), end: Dates.addDays(today, -1), progress: 40 }, // overdue
+  { id: 'b', milestone: false, status: 'in-progress', start: Dates.addDays(today, -1), end: Dates.addDays(today, 3), progress: 20 },  // current
+  { id: 'c', milestone: false, status: 'not-started', start: Dates.addDays(today, 4), end: Dates.addDays(today, 8), progress: 0 },    // upcoming
+  { id: 'd', milestone: false, status: 'done', start: Dates.addDays(today, -10), end: Dates.addDays(today, -6), progress: 100 },      // done
+  { id: 'm', milestone: true, status: 'not-started', start: Dates.addDays(today, 2), end: Dates.addDays(today, 2), progress: 0 },     // milestone
+];
+const buckets = bucketTasks(cfTasks, today);
+ok(buckets.overdue.length === 1 && buckets.overdue[0].id === 'a', 'bucketTasks: overdue');
+ok(buckets.current.length === 1 && buckets.current[0].id === 'b', 'bucketTasks: current');
+ok(buckets.upcoming.length === 1 && buckets.upcoming[0].id === 'c', 'bucketTasks: upcoming');
+ok(buckets.done.length === 1 && buckets.milestones.length === 1, 'bucketTasks: done + milestone lanes');
+const ws = workSummary(cfTasks, today);
+ok(ws.total === 4 && ws.overdue === 1 && ws.done === 1, 'workSummary counts exclude milestones');
+ok(ws.progress === 40, 'workSummary avg progress'); // (40+20+0+100)/4
+
+ok(stepProgress(40, 1) === 50 && stepProgress(0, -1) === 0 && stepProgress(90, 1) === 100, 'stepProgress clamps + snaps');
+ok(coerceStatus(100, 'in-progress') === 'done', 'coerceStatus: 100% → done');
+ok(coerceStatus(30, 'not-started') === 'in-progress', 'coerceStatus: progress starts work');
+ok(coerceStatus(50, 'done') === 'in-progress', 'coerceStatus: <100 un-dones');
+
+let q = [];
+q = outboxAdd(q, { qid: 'q1', kind: 'task.patch', targetId: 'a', body: { progress: 60 } });
+q = outboxAdd(q, { qid: 'q1', kind: 'task.patch', targetId: 'a', body: { progress: 75 } }); // de-dupe by qid
+ok(q.length === 1 && q[0].body.progress === 75, 'outboxAdd de-dupes by qid');
+q = outboxAdd(q, { qid: 'q2', kind: 'punch.patch', targetId: 'p1', body: { status: 'ready' } });
+ok(outboxSummary(q).pending === 2 && outboxSummary(q).byKind['task.patch'] === 1, 'outboxSummary by kind');
+const merged = applyPendingTasks(cfTasks, q);
+ok(merged.find((t) => t.id === 'a').progress === 75 && merged.find((t) => t.id === 'a').pending === true, 'applyPendingTasks projects queued edits');
+ok(merged.find((t) => t.id === 'a').status === 'in-progress', 'applyPendingTasks recomputes status');
+ok(outboxRemove(q, 'q1').length === 1, 'outboxRemove drops by qid');
+
+ok(dueLabel(Dates.addDays(today, -2), today).tone === 'bad', 'dueLabel: late = bad');
+ok(dueLabel(today, today).text === 'due today', 'dueLabel: today');
+ok(dueLabel(Dates.addDays(today, 5), today).tone === 'ok', 'dueLabel: far = ok');
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} units: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

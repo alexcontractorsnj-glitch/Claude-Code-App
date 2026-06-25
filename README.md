@@ -19,6 +19,38 @@ sequence, and track field work across multiple projects, crews, and trades.
 | **☰ Field** | Daily field reports — weather, temperature, manpower, work performed, deliveries and delays, newest first. The site's daily log. |
 | **✔ Punch** | Punch list & closeout — deficiency items with status (open → ready → accepted/rejected), priority, location, trade, assignee, and a closeout-readiness roll-up. |
 
+## 📱 Corefield — the mobile field app
+
+**Corefield** is the phone-first companion to BuildFlow for crews on-site. It's a
+separate, installable **PWA** that talks to the *same* REST API and shares the
+*same* domain core (`src/js/seed.js`) — so a superintendent's edit on the desktop
+Gantt and a foreman's `% complete` bump from Corefield are the same data, live.
+
+Open it at **`/mobile/`** (e.g. http://localhost:8000/mobile/) and sign in with
+the same accounts. On a phone, "Add to Home Screen" installs it standalone.
+
+| Tab | What a crew does |
+|-----|------------------|
+| **🪧 Work** | "My Work" — work packages bucketed **Overdue → In progress → Upcoming → Done**, with a progress ring and per-task trade/crew/due. Tap a task to bump **% complete** (thumb-friendly ±25% stepper + quick 0/25/50/75/100 chips) and flip **status** — status/​progress coherence matches the server. |
+| **✔ Punch** | The punch list, sorted open-first, with a one-tap status change (open → ready → accepted/rejected) and a **+ Punch item** quick-add. |
+| **📋 Reports** | The daily field log + a fast **+ Daily report** form (weather, temps, manpower, work performed, deliveries, delays). |
+| **👷 Me** | Who you are, your role/scope, live connection + pending-sync status, sign-out, and a link back to the full desktop app. |
+
+**Built for the field — works with no signal.** Corefield caches the last
+schedule for instant/offline boot, and any change you make while disconnected is
+queued in an **offline outbox** (persisted to LocalStorage) and **replayed in
+order when you reconnect** — the app bar shows `Offline · N queued`, optimistic
+edits are tagged `⟳ queued`, and a server-rejected op (conflict/permission) is
+dropped with a notice so the queue can never wedge. A **service worker**
+(`mobile/sw.js`) precaches the app shell (cache-first) and the schedule read
+(network-first → cache), which is also what makes it installable. RBAC and
+project scope are mirrored client-side and enforced server-side, exactly as on
+desktop.
+
+The field rules (task bucketing, the progress stepper, status coherence, and the
+outbox reducers) live in pure, unit-tested **`src/mobile/core.js`** — no DOM, no
+browser globals — so they ship in one place and are covered by `npm test`.
+
 ## Run it
 
 No build step, no `npm install` — pure ES modules + a zero-dependency Node server.
@@ -355,6 +387,17 @@ src/
       documents.js      # submittal & RFI columns with status badges + due dates
       field.js          # daily field report cards
       punch.js          # punch list + closeout-readiness deck
+  mobile/
+    core.js             # pure, tested field core: task bucketing, progress
+                        #   stepper, status coherence, offline-outbox reducers
+mobile/                 # Corefield — installable PWA field app (served at /mobile/)
+  index.html            # mobile shell (manifest + theme-color + module entry)
+  app.js                # bottom-tab UI: Work / Punch / Reports / Me + sheets
+  store.js              # mobile store: same REST API + offline outbox + polling
+  styles.css            # phone-first dark theme (shared palette)
+  sw.js                 # service worker — offline app shell + schedule cache
+  manifest.webmanifest  # PWA manifest (standalone, icons)
+  icon.svg              # app/home-screen icon
 ```
 
 **Why vanilla JS / no framework?** One shared `store` (in `data.js`) holds all
@@ -370,10 +413,12 @@ zero total float are flagged), not hard-coded.
 
 - Email/webhook delivery for the alert center
 - Real file/photo upload (blob store) behind the existing attachment model
-- Mobile-friendly field view for crews
+- Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
 
-**Done recently:** ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
+**Done recently:** ✅ **Corefield mobile field app** — installable PWA (Work /
+Punch / Reports), offline outbox with replay-on-reconnect, on the shared API +
+domain core · ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·
