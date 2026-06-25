@@ -127,3 +127,33 @@ export function dispatcherSystem(state, actorName) {
 export function mentionsDispatcher(body) {
   return /(^|\s)@?dispatcher\b/i.test(String(body || ''));
 }
+
+// Format a call duration as "m:ss" / "Hh m:ss".
+export function fmtCallDur(sec) {
+  const s = Math.max(0, Math.round(sec || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  const mm = h ? String(m).padStart(2, '0') : String(m);
+  return (h ? `${h}h ` : '') + `${mm}:${String(ss).padStart(2, '0')}`;
+}
+
+// A deterministic recap posted to a task thread after a task-linked call ends.
+// No transcript is captured (calls are peer-to-peer), so the recap is grounded
+// in metadata + the task's still-open work — the items a call most likely
+// touched and that someone should confirm. The server may enrich the lead line
+// with Claude when a key is present; this pure version is the always-on floor.
+export function callSummary(state, { taskId, callerName, peerName, durationSec, video }) {
+  const t = (state.tasks || []).find((x) => x.id === taskId);
+  const tname = t ? t.name : 'this task';
+  const people = [callerName, peerName].filter(Boolean).join(' ↔ ') || 'the crew';
+  const lines = [`📞 Call recap — ${people} · ${video ? 'video' : 'audio'} · ${fmtCallDur(durationSec)} · re: “${tname}”.`];
+  const openCon = (state.constraints || []).filter((c) => c.taskId === taskId && c.status === 'open');
+  const openIss = (state.issues || []).filter((i) => i.taskId === taskId && i.status === 'open');
+  if (openCon.length || openIss.length) {
+    lines.push('Open follow-ups on this task:');
+    openCon.slice(0, 4).forEach((c) => lines.push(`• 🚧 ${c.number} ${c.title}${c.responsible ? ` (${c.responsible})` : ''}`));
+    openIss.slice(0, 4).forEach((i) => lines.push(`• ⚠️ ${i.number} ${i.title}`));
+  } else {
+    lines.push('No open constraints or issues on this task — nothing outstanding flagged.');
+  }
+  return lines.join('\n');
+}

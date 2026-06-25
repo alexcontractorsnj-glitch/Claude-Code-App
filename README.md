@@ -140,6 +140,17 @@ with mute, camera toggle, and hang-up, on desktop and phone.
 > symmetric-NAT networks won't connect** — adding a TURN server is the production
 > fix. The signaling + UI are built so that's a config change, not a rewrite.
 
+**📞 Call about *this task* + auto recap.** Every task's Activity feed has a
+**Call about this task** bar: tap an online teammate to start an audio/video call
+**pre-tagged** with the task (`link={kind:'task',id}` rides the WebRTC offer, so
+both ends know what it's about). When the call ends, the initiator's client hits
+`POST /api/tasks/:id/callsummary` and the **Dispatcher posts a recap** straight
+into that task's thread — participants, audio/video, duration, and the task's
+still-**open follow-ups** (constraints + issues) so nothing said on the call gets
+lost. Calls are peer-to-peer with no transcript, so the recap is grounded in
+metadata + the live make-ready/issue state (and is enriched by Claude when a key
+is set), not invented. `callSummary()` is pure + tested.
+
 ## 🤖 AI Dispatcher
 
 The **Dispatcher** is an AI agent that watches the field and acts on it. It posts
@@ -238,6 +249,7 @@ views changes.
 | `POST /api/photos`, `GET /api/photos/:id` | field-photo blob store (by reference, capped, out of `/api/state`) |
 | `POST/PATCH/DELETE /api/issues/:id?`, `POST /api/issues/:id/promote` | field issue flags + promote to punch/RFI |
 | `POST/PATCH/DELETE /api/constraints/:id?` | Last-Planner make-ready constraints (open → cleared) |
+| `POST /api/tasks/:id/callsummary` | post a call recap (Dispatcher-authored) into the task thread |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -540,9 +552,11 @@ zero total float are flagged), not hard-coded.
 - Email/webhook delivery for the alert center
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
-- A "call about this task" button (pre-targeted) + AI call/voice summaries posted back
+- TURN relay so calls connect on restrictive/symmetric-NAT networks
 
-**Done recently:** ✅ **Make-Ready constraints** — Last-Planner constraint log on
+**Done recently:** ✅ **Call about this task** — task-tagged 1:1 calls with an
+auto **recap** (participants, duration, open follow-ups) posted back into the
+task thread by the Dispatcher · ✅ **Make-Ready constraints** — Last-Planner constraint log on
 every task (open → cleared, responsible party + need-by), a **% Made Ready** KPI
 view, and the dispatcher watching overdue constraints · ✅ **Field capture on the
 task** — photos (camera/file → client-side JPEG → blob store) and **issue flags**

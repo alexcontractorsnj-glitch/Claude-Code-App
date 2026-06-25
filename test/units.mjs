@@ -184,7 +184,7 @@ ok(makeMessage([], { channelId: ch1, body: 'hi' }).voice === null, 'non-voice me
 
 section('deliveries + dispatcher');
 const { makeDelivery, deliveryRisk, deliverySummary, deliveriesFor } = await import('../src/js/deliveries.js');
-const { analyzeField, fallbackBrief, mentionsDispatcher, DISPATCHER } = await import('../src/js/dispatcher.js');
+const { analyzeField, fallbackBrief, mentionsDispatcher, callSummary, fmtCallDur, DISPATCHER } = await import('../src/js/dispatcher.js');
 ok(seed.deliveries.length === 6 && seed.deliveries.every((d) => d.id && d.due), 'seed has 6 deliveries');
 ok(makeDelivery([], { projectId: 'p1', status: 'bogus' }).status === 'scheduled', 'delivery invalid status → default');
 ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), -3) }).late === true, 'deliveryRisk late');
@@ -203,6 +203,12 @@ ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a dig
 ok(/Constraints:/.test(brief) && /made ready/.test(brief), 'fallbackBrief includes constraint + % made ready line');
 ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
 ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
+ok(fmtCallDur(0) === '0:00' && fmtCallDur(75) === '1:15' && fmtCallDur(3661) === '1h 01:01', 'fmtCallDur formats m:ss / h m:ss');
+const recap = callSummary(seed, { taskId: 't4', callerName: 'A. Whitfield', peerName: 'D. Okafor', durationSec: 204, video: false });
+ok(/📞 Call recap/.test(recap) && /A\. Whitfield ↔ D\. Okafor/.test(recap) && /audio · 3:24/.test(recap), 'callSummary header: people, media, duration');
+ok(/Open follow-ups/.test(recap) && /🚧/.test(recap) && /⚠️/.test(recap), 'callSummary lists open constraints + issues on the task');
+const recap2 = callSummary(seed, { taskId: 't1', callerName: 'A', peerName: 'B', durationSec: 30, video: true });
+ok(/video/.test(recap2) && /nothing outstanding/.test(recap2), 'callSummary: clean task → nothing outstanding');
 
 section('task activity (linkedTo)');
 let tam = [];

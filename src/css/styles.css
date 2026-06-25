@@ -771,6 +771,11 @@ textarea.input { resize: vertical; font-family: inherit; }
 .task-activity { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
 .ta-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; color: var(--text-dim); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .5px; }
 .ta-count { background: var(--accent); color: #1a1206; font-size: 11px; font-weight: 800; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: grid; place-items: center; }
+.ta-callbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 8px 10px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px; }
+.ta-callbar-label { font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.ta-callbar-none { font-size: 12px; color: var(--text-faint); }
+.ta-callchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; padding: 2px 4px 2px 10px; }
+.ta-callwho { color: var(--text); }
 .ta-feed { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
 .ta-empty { color: var(--text-faint); font-size: 13px; padding: 8px 0; }
 .ta-msg { background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }

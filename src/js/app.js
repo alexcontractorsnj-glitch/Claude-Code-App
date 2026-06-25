@@ -24,6 +24,7 @@ import { CO_STATUSES } from './changeorders.js';
 import { WEATHER } from './fieldreports.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
 import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from './constraints.js';
+import { callsSupported } from './webrtc.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -381,10 +382,35 @@ function taFmt(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
+// "Call about this task" — pre-targets a teammate and tags the call with the
+// task, so a recap lands back in this Activity feed when the call ends.
+function taskCallBar(taskId) {
+  if (!callsSupported()) return null;
+  const t = store.task(taskId);
+  if (!store.canEditProject(t.projectId)) return null;
+  const bar = el('div', { class: 'ta-callbar' });
+  const render = () => {
+    clear(bar);
+    const online = store.peopleOnline();
+    bar.appendChild(el('span', { class: 'ta-callbar-label' }, '📞 Call about this task'));
+    if (!online.length) { bar.appendChild(el('span', { class: 'ta-callbar-none' }, 'No teammates online')); return; }
+    online.slice(0, 4).forEach((p) => bar.appendChild(el('span', { class: 'ta-callchip' }, [
+      el('span', { class: 'ta-callwho' }, p.name),
+      el('button', { class: 'icon-btn', title: `Audio call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, false).catch(() => store._notify('Mic unavailable.', 'warn')) }, '📞'),
+      el('button', { class: 'icon-btn', title: `Video call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, true).catch(() => store._notify('Camera unavailable.', 'warn')) }, '🎥'),
+    ])));
+  };
+  render();
+  const unsub = store.subscribe(() => { if (bar.isConnected) render(); else unsub(); });
+  return bar;
+}
+
 function taskActivitySection(taskId) {
   const wrap = el('div', { class: 'task-activity' });
   const count = el('span', { class: 'ta-count' });
   wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '💬 Activity'), count]));
+  const cb = taskCallBar(taskId);
+  if (cb) wrap.appendChild(cb);
   const feed = el('div', { class: 'ta-feed' });
   wrap.appendChild(feed);
 

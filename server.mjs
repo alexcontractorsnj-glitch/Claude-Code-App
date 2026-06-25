@@ -27,7 +27,7 @@ import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/
 import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
 import { makeIssue, ISSUE_SEVERITIES, ISSUE_STATUSES } from './src/js/issues.js';
 import { makeConstraint, CONSTRAINT_TYPES, CONSTRAINT_STATUSES } from './src/js/constraints.js';
-import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
+import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, callSummary, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -206,8 +206,8 @@ const persistUsers = () => persist(AUTH_FILE, users);
 // ANTHROPIC_API_KEY is configured.
 const DISPATCHER_ACTOR = { name: DISPATCHER.name, role: 'system' };
 
-function postDispatcher(channel, text, kind) {
-  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, createdAt: new Date().toISOString() });
+function postDispatcher(channel, text, kind, linkedTo) {
+  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, linkedTo: linkedTo || null, createdAt: new Date().toISOString() });
   state.messages.push(msg);
   state.messages = capChannel(state.messages, channel.id);
   bump();
@@ -965,6 +965,19 @@ async function handleApi(req, res, urlPath) {
       if (method === 'GET' && id && sub === 'history') {
         // Full audit trail for one task (any authenticated user may view).
         return send(res, 200, audit.filter((e) => e.targetId === id).reverse());
+      }
+      if (method === 'POST' && id && sub === 'callsummary') {
+        // Post-call recap into the task thread (the Dispatcher authors it). The
+        // caller's client hits this when a task-linked call ends.
+        const t = (state.tasks || []).find((x) => x.id === id);
+        if (!t) return send(res, 404, { error: 'task not found' });
+        if (!canEditProject(actor, t.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req).catch(() => ({}));
+        const text = callSummary(state, { taskId: id, callerName: actor.name, peerName: body.peerName || '', durationSec: +body.durationSec || 0, video: !!body.video });
+        const channel = (state.channels || []).find((c) => c.id === channelIdForProject(t.projectId));
+        if (!channel) return send(res, 404, { error: 'no channel for project' });
+        const msg = postDispatcher(channel, text, 'reply', { kind: 'task', id });
+        return send(res, 201, msg, { ETag: etag() });
       }
       if (method === 'POST') {
         const body = await readBody(req);

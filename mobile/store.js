@@ -96,6 +96,7 @@ class MobileStore {
     this._es = null;                   // EventSource (live stream)
     this.callListeners = new Set();
     this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
+    this.calls.onEnded = (info) => this._postCallSummary(info);
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this._setOnline(true));
@@ -275,6 +276,12 @@ class MobileStore {
   _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
   onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
   callPeer(peer, video) { return this.calls.call(peer, video); }
+  callAboutTask(peer, taskId, video) { return this.calls.call(peer, video, { kind: 'task', id: taskId }); }
+  _postCallSummary({ link, peer, durationSec, video }) {
+    if (!link || link.kind !== 'task' || this.local) return;
+    api('POST', '/tasks/' + link.id + '/callsummary', { peerName: peer && peer.name, durationSec, video })
+      .then(() => this._refresh()).catch(() => {});
+  }
   peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
   onlineCount() { return this.onlineUsers.length; }
   _pull() {

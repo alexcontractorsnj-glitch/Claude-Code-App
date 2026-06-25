@@ -305,6 +305,24 @@ function renderTaskIssues(body, taskId) {
 // Per-task discussion (the task's slice of its project channel) inside the sheet.
 function renderTaskActivity(body, taskId) {
   body.appendChild(el('div', { class: 'sheet-label' }, '💬 Activity'));
+  const t = store.task(taskId);
+  if (callsSupported() && store.canEditProject(t.projectId)) {
+    const bar = el('div', { class: 'ta-callbar-m' });
+    const renderBar = () => {
+      clear(bar);
+      const online = store.peopleOnline();
+      bar.appendChild(el('span', { class: 'ta-callbar-label-m' }, '📞 Call about this task'));
+      if (!online.length) { bar.appendChild(el('span', { class: 'ta-callbar-none-m' }, 'No teammates online')); return; }
+      online.slice(0, 3).forEach((p) => bar.appendChild(el('span', { class: 'ta-callchip-m' }, [
+        el('span', {}, p.name),
+        el('button', { class: 'qbtn', title: `Audio call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, false).catch(() => store.notify('Mic unavailable.', 'warn')) }, '📞'),
+        el('button', { class: 'qbtn', title: `Video call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, true).catch(() => store.notify('Camera unavailable.', 'warn')) }, '🎥'),
+      ])));
+    };
+    renderBar();
+    const unsubBar = store.subscribe(() => { if (bar.isConnected) renderBar(); else unsubBar(); });
+    body.appendChild(bar);
+  }
   const feed = el('div', { class: 'ta-feed-m' });
   body.appendChild(feed);
   const renderFeed = () => {

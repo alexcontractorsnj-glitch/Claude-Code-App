@@ -90,6 +90,7 @@ class Store {
     this._es = null;              // EventSource (live stream)
     this.callListeners = new Set();
     this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
+    this.calls.onEnded = (info) => this._postCallSummary(info);
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
   }
@@ -258,8 +259,19 @@ class Store {
   // ---- calls (1:1 audio/video) ----
   _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
   onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
-  callPeer(peer, video) { return this.calls.call(peer, video); }
+  callPeer(peer, video, link) { return this.calls.call(peer, video, link); }
+  // Call a teammate ABOUT a task — pre-tagged so a recap lands in the task thread.
+  callAboutTask(peer, taskId, video) { return this.callPeer(peer, video, { kind: 'task', id: taskId }); }
   peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
+
+  // When a task-linked call ends, the initiator posts an AI/deterministic recap
+  // into the task's Activity feed (attributed to the Dispatcher, server-side).
+  _postCallSummary({ link, peer, durationSec, video }) {
+    if (!link || link.kind !== 'task' || this.mode !== 'remote') return;
+    api('POST', '/tasks/' + link.id + '/callsummary', { peerName: peer && peer.name, durationSec, video })
+      .then(() => { this._pull(); })
+      .catch(() => {});
+  }
 
   _pull() {
     if (this._pulling || this.mode !== 'remote') return;

@@ -187,6 +187,14 @@ try {
   ok((await http('POST', '/api/constraints', { projectId: 'p1', title: 'x' })).status === 403, 'viewer cannot log a constraint → 403');
   await login('admin', 'admin123');
 
+  // --- task-linked call recap (posts a dispatcher message into the task thread) ---
+  const recap = await http('POST', '/api/tasks/t4/callsummary', { peerName: 'D. Okafor', durationSec: 204, video: false });
+  ok(recap.status === 201 && recap.data.authorId === 'dispatcher' && recap.data.linkedTo && recap.data.linkedTo.id === 't4', 'call recap posted, linked to the task');
+  ok(/📞 Call recap/.test(recap.data.body) && /3:24/.test(recap.data.body), 'recap body has header + duration');
+  const tact = await http('GET', '/api/state');
+  ok(tact.data.messages.some((m) => m.id === recap.data.id && m.linkedTo && m.linkedTo.id === 't4'), 'recap appears in the task activity (linkedTo)');
+  ok((await http('POST', '/api/tasks/nope/callsummary', { durationSec: 5 })).status === 404, 'call recap for missing task → 404');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');
