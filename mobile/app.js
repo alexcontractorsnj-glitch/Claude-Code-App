@@ -13,9 +13,12 @@ import {
 import { el, clear } from '../src/js/utils.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
+import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../src/js/voice.js';
+import { callsSupported } from '../src/js/webrtc.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
+  chat:    { label: 'Chat',    icon: '💬' },
   punch:   { label: 'Punch',   icon: '✔' },
   reports: { label: 'Reports', icon: '📋' },
   me:      { label: 'Me',      icon: '👷' },
@@ -106,7 +109,7 @@ function renderTabBar() {
   if (!tb) return;
   clear(tb);
   const s = store.summary();
-  const badge = { work: s.overdue, punch: store.punch().filter((p) => p.status === 'open').length, reports: 0, me: store.pendingCount() };
+  const badge = { work: s.overdue, chat: store.totalUnread(), punch: store.punch().filter((p) => p.status === 'open').length, reports: 0, me: store.pendingCount() };
   Object.entries(TABS).forEach(([key, t]) => {
     const b = badge[key];
     tb.appendChild(el('button', {
@@ -368,6 +371,133 @@ function openReportCreate() {
   });
 }
 
+// --- CHAT tab ---------------------------------------------------------------
+function msgTime(iso) { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); }
+function msgDay(iso) { return Dates.fmtLong(Dates.iso(new Date(iso))); }
+function mentionNodes(text) {
+  return String(text || '').split(/(@[a-zA-Z0-9_.-]+)/g)
+    .map((p) => (/^@[a-zA-Z0-9_.-]+$/.test(p) ? el('span', { class: 'cf-mention' }, p) : p));
+}
+
+function renderChat(main) {
+  if (ui.chatChannelId && store.channel(ui.chatChannelId)) return renderConversation(main, ui.chatChannelId);
+  ui.chatChannelId = null;
+  const channels = store.channels.filter((c) => store.projectId === 'all' || c.projectId === store.projectId);
+  main.appendChild(el('div', { class: 'cf-listhead' }, [el('div', {}, `Channels · ${channels.length}`)]));
+  if (!channels.length) { main.appendChild(empty('No channels for this project.')); return; }
+  channels.forEach((c) => {
+    const proj = store.project(c.projectId);
+    const last = store.lastMessageFor(c.id);
+    const un = store.unread(c.id);
+    main.appendChild(el('div', { class: 'cf-card flat', onclick: () => { ui.chatChannelId = c.id; render(); } }, [
+      el('div', { class: 'cf-card-bar', style: { background: (proj && proj.color) || '#888' } }),
+      el('div', { class: 'cf-card-body' }, [
+        el('div', { class: 'cf-card-top' }, [
+          el('div', { class: 'cf-card-name' }, c.name),
+          un ? el('span', { class: 'cf-badge cf-badge-inline' }, String(un)) : null,
+        ]),
+        el('div', { class: 'cf-card-note' }, last ? `${last.authorName.split(' ')[0]}: ${last.body}` : 'No messages yet'),
+        last ? el('div', { class: 'cf-card-foot' }, [el('span', { class: 'cf-muted' }, msgTime(last.createdAt))]) : null,
+      ]),
+    ]));
+  });
+
+  const people = store.peopleOnline();
+  main.appendChild(el('div', { class: 'cf-sec' }, [el('span', { class: 'cf-sec-dot good' }), 'People online', el('span', { class: 'cf-sec-n' }, String(people.length))]));
+  if (!people.length) main.appendChild(el('div', { class: 'cf-empty', style: { padding: '14px' } }, 'No one else online.'));
+  people.forEach((p) => {
+    main.appendChild(el('div', { class: 'cf-card flat' }, [
+      el('div', { class: 'cf-card-body' }, [el('div', { class: 'cf-card-top' }, [el('span', { class: 'cf-person-dot' }), el('div', { class: 'cf-card-name' }, p.name)])]),
+      callsSupported() ? el('div', { class: 'cf-person-call' }, [
+        el('button', { class: 'cf-call-ico', onclick: () => store.callPeer(p, false).catch(() => store.notify('Mic unavailable.', 'warn')) }, '📞'),
+        el('button', { class: 'cf-call-ico', onclick: () => store.callPeer(p, true).catch(() => store.notify('Camera unavailable.', 'warn')) }, '🎥'),
+      ]) : null,
+    ]));
+  });
+}
+
+function renderConversation(main, channelId) {
+  const ch = store.channel(channelId);
+  const msgs = store.messagesFor(channelId);
+  main.appendChild(el('div', { class: 'cf-chat-head' }, [
+    el('button', { class: 'cf-back', onclick: () => { ui.chatChannelId = null; render(); } }, '‹'),
+    el('div', { class: 'cf-chat-title' }, ch.name),
+  ]));
+
+  const stream = el('div', { class: 'cf-chat-stream' });
+  if (!msgs.length) stream.appendChild(el('div', { class: 'cf-empty' }, 'No messages yet. Say hello.'));
+  let lastDay = null;
+  msgs.forEach((m) => {
+    const day = msgDay(m.createdAt);
+    if (day !== lastDay) { stream.appendChild(el('div', { class: 'cf-chat-day' }, day)); lastDay = day; }
+    const mine = m.authorId === store._uid();
+    const bot = m.authorId === 'dispatcher';
+    stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
+      el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+        mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
+        m.body ? el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)) : null,
+        m.voice ? el('div', { class: 'cf-bubble-voice' }, [
+          el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
+          el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
+        ]) : null,
+        el('div', { class: 'cf-bubble-meta' }, [
+          el('span', {}, msgTime(m.createdAt)),
+          mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
+        ]),
+      ]),
+    ]));
+  });
+  main.appendChild(stream);
+
+  const typers = store.typingIn(channelId);
+  if (typers.length) main.appendChild(el('div', { class: 'cf-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
+
+  if (store.canPost(channelId) && ui.chatRec) {
+    const timeLbl = el('span', { class: 'cf-rec-time' }, '0:00');
+    if (ui.chatRecInt) clearInterval(ui.chatRecInt);
+    ui.chatRecSec = ui.chatRec.elapsed();
+    timeLbl.textContent = fmtDur(ui.chatRecSec);
+    ui.chatRecInt = setInterval(() => { ui.chatRecSec += 1; timeLbl.textContent = fmtDur(ui.chatRecSec); }, 1000);
+    const finish = (sendIt) => async () => {
+      clearInterval(ui.chatRecInt); ui.chatRecInt = null;
+      const r = ui.chatRec; ui.chatRec = null;
+      if (sendIt) { const clip = await r.stop(); if (clip && clip.b64) store.sendVoice(channelId, clip); } else r.cancel();
+      render();
+    };
+    main.appendChild(el('div', { class: 'cf-chat-composer recording' }, [
+      el('span', { class: 'cf-rec-dot' }), el('span', { class: 'cf-rec-lbl' }, 'Recording'), timeLbl,
+      el('button', { class: 'cf-rec-cancel', onclick: finish(false) }, '✕'),
+      el('button', { class: 'cf-chat-send', onclick: finish(true) }, '➤'),
+    ]));
+  } else if (store.canPost(channelId)) {
+    const ta = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Message…' });
+    const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; render(); };
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+    ta.addEventListener('input', () => store.postTyping(channelId));
+    const btns = [];
+    if (supportsDictation()) {
+      let dict = null;
+      const mic = el('button', { class: 'cf-chat-ico', title: 'Dictate' }, '🎙');
+      mic.onclick = () => {
+        if (dict) { dict.stop(); dict = null; mic.classList.remove('on'); return; }
+        const base = ta.value ? ta.value + ' ' : '';
+        dict = startDictation((f, i) => { ta.value = base + f + i; }, () => { dict = null; mic.classList.remove('on'); });
+        if (dict) mic.classList.add('on');
+      };
+      btns.push(mic);
+    }
+    const recBtn = supportsRecording()
+      ? el('button', { class: 'cf-chat-ico rec', title: 'Voice note', onclick: async () => { try { ui.chatRec = await startRecording(); render(); } catch { store.notify('Microphone unavailable.', 'warn'); } } }, '🎤')
+      : null;
+    main.appendChild(el('div', { class: 'cf-chat-composer' }, [...btns, ta, el('button', { class: 'cf-chat-send', onclick: send }, '➤'), recBtn]));
+  } else {
+    main.appendChild(el('div', { class: 'cf-chat-composer readonly' }, store.can('write') ? 'No posting access to this project' : 'Read-only role'));
+  }
+
+  store.markRead(channelId);
+  setTimeout(() => { const s = main.querySelector('.cf-chat-stream'); if (s) s.scrollTop = s.scrollHeight; }, 0);
+}
+
 // --- ME tab -----------------------------------------------------------------
 function renderMe(main) {
   const pending = store.pendingCount();
@@ -418,7 +548,7 @@ function pickProject() {
 function fab(label, onclick) { return el('button', { class: 'cf-fab', onclick }, label); }
 
 // --- render orchestration ---------------------------------------------------
-const VIEW = { work: renderWork, punch: renderPunch, reports: renderReports, me: renderMe };
+const VIEW = { work: renderWork, chat: renderChat, punch: renderPunch, reports: renderReports, me: renderMe };
 
 function render() {
   if (!built) return;
@@ -427,6 +557,7 @@ function render() {
   const main = document.getElementById('cf-main');
   if (!main) return;
   clear(main);
+  main.className = 'cf-main' + (ui.tab === 'chat' && ui.chatChannelId ? ' chatting' : '');
   main.scrollTop = 0;
   VIEW[ui.tab](main);
 }
@@ -485,11 +616,51 @@ function renderShell(authState) {
   if (!built) buildShell(); else render();
 }
 
+// --- call overlay (1:1 audio/video) -----------------------------------------
+let callRoot = null, vLocal = null, vRemote = null;
+const callInit = (n) => String(n || '?').split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+
+function renderCallUI(s) {
+  if (!s || s.state === 'idle') { if (callRoot) { callRoot.remove(); callRoot = null; vLocal = vRemote = null; } return; }
+  if (!callRoot) { callRoot = el('div', { class: 'cf-call' }); document.body.appendChild(callRoot); }
+  if (!vRemote) vRemote = el('video', { class: 'cf-call-remote', autoplay: '', playsinline: '' });
+  if (!vLocal) { vLocal = el('video', { class: 'cf-call-local', autoplay: '', playsinline: '' }); vLocal.muted = true; }
+  if (vRemote.srcObject !== (s.remote || null)) vRemote.srcObject = s.remote || null;
+  if (vLocal.srcObject !== (s.local || null)) vLocal.srcObject = s.local || null;
+  clear(callRoot);
+  const c = store.calls;
+  const name = (s.peer && s.peer.name) || 'Caller';
+  const face = el('div', { class: 'cf-call-face' }, [el('div', { class: 'cf-call-avatar' }, callInit(name)), el('div', { class: 'cf-call-name' }, name)]);
+
+  if (s.state === 'ringing') {
+    callRoot.append(face, el('div', { class: 'cf-call-sub' }, `Incoming ${s.video ? 'video' : 'audio'} call`),
+      el('div', { class: 'cf-call-actions' }, [
+        el('button', { class: 'cf-call-btn decline', onclick: () => c.decline() }, '✕'),
+        el('button', { class: 'cf-call-btn accept', onclick: () => c.accept().catch(() => store.notify('Mic/camera unavailable.', 'warn')) }, '✓'),
+      ]));
+    return;
+  }
+  if (s.state === 'calling' || s.state === 'ended') {
+    callRoot.append(face, el('div', { class: 'cf-call-sub' }, s.state === 'ended' ? 'Call ended' : 'Calling…'),
+      s.state === 'calling' ? el('div', { class: 'cf-call-actions' }, [el('button', { class: 'cf-call-btn decline', onclick: () => c.hangup() }, '✕')]) : null);
+    return;
+  }
+  // connected
+  if (s.video) { callRoot.appendChild(vRemote); callRoot.appendChild(vLocal); }
+  else callRoot.appendChild(el('div', { class: 'cf-call-face big' }, [el('div', { class: 'cf-call-avatar' }, callInit(name)), el('div', { class: 'cf-call-name' }, name), el('div', { class: 'cf-call-sub' }, 'On call')]));
+  callRoot.appendChild(el('div', { class: 'cf-call-bar' }, [
+    el('button', { class: 'cf-call-ctl' + (s.muted ? ' on' : ''), onclick: () => c.toggleMute() }, s.muted ? '🔇' : '🎙'),
+    s.video ? el('button', { class: 'cf-call-ctl' + (s.cameraOff ? ' on' : ''), onclick: () => c.toggleCamera() }, '📷') : null,
+    el('button', { class: 'cf-call-ctl hangup', onclick: () => c.hangup() }, '📞'),
+  ]));
+}
+
 // --- boot -------------------------------------------------------------------
 function boot() {
   root = document.getElementById('cf-app');
   store.onAuth((authState) => renderShell(authState));
   store.subscribe(() => render());
+  store.onCall((snap) => renderCallUI(snap));
   store.onNotice((msg, tone = 'info') => {
     const stack = document.querySelector('.cf-toasts');
     if (!stack) return;

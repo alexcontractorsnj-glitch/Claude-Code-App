@@ -22,6 +22,7 @@ const { makeDoc, nextDocNumber, isOpen, overdueDocs } = await import('../src/js/
 const { makePunchItem, closeoutSummary, isOpenPunch, cleanAttachments } = await import('../src/js/punch.js');
 const { computeAlerts, alertSummary } = await import('../src/js/alerts.js');
 const { bucketTasks, workSummary, stepProgress, coerceStatus, outboxAdd, outboxRemove, outboxSummary, applyPendingTasks, dueLabel } = await import('../src/mobile/core.js');
+const { makeMessage, makeChannel, seedChannels, capChannel, setRead, lastRead, unreadCount, lastMessage, parseMentions, searchMessages, channelIdForProject, MSG_CAP } = await import('../src/js/messaging.js');
 
 section('seed + dates');
 const seed = seedState();
@@ -152,6 +153,54 @@ ok(outboxRemove(q, 'q1').length === 1, 'outboxRemove drops by qid');
 ok(dueLabel(Dates.addDays(today, -2), today).tone === 'bad', 'dueLabel: late = bad');
 ok(dueLabel(today, today).text === 'due today', 'dueLabel: today');
 ok(dueLabel(Dates.addDays(today, 5), today).tone === 'ok', 'dueLabel: far = ok');
+
+section('messaging (channels + messages)');
+ok(seed.channels.length === 3 && seed.channels[0].id === channelIdForProject(seed.projects[0].id), 'seed: one channel per project');
+ok(seed.messages.length >= 6 && seed.messages.every((m) => m.id && m.channelId && m.authorName), 'seed messages well-formed');
+const ch1 = channelIdForProject('p1');
+let msgs = [];
+msgs.push(makeMessage(msgs, { channelId: ch1, authorId: 'u1', authorName: 'U One', body: 'hi @bob', createdAt: '2026-06-01T10:00:00Z' }));
+msgs.push(makeMessage(msgs, { channelId: ch1, authorId: 'u2', authorName: 'U Two', body: 'reply', createdAt: '2026-06-01T10:05:00Z' }));
+ok(msgs[0].id === 'm1' && msgs[1].id === 'm2', 'message ids increment');
+ok(parseMentions('hey @bob and @ann.lee, see @bob again').join(',') === 'bob,ann.lee', 'parseMentions dedupes');
+ok(lastMessage(msgs, ch1).id === 'm2', 'lastMessage newest');
+// unread for u2: m1 (from u1) is unread until read; own m2 never counts
+ok(unreadCount(msgs, ch1, null, 'u2') === 1, 'unread excludes own + counts others');
+const reads1 = setRead({}, 'u2', ch1, '2026-06-01T10:10:00Z');
+ok(lastRead(reads1, 'u2', ch1) === '2026-06-01T10:10:00Z', 'setRead/lastRead roundtrip');
+ok(unreadCount(msgs, ch1, lastRead(reads1, 'u2', ch1), 'u2') === 0, 'after read → zero unread');
+ok(makeMessage([], { channelId: ch1, body: 'x'.repeat(5000) }).body.length === 4000, 'message body capped at MAX_BODY');
+// cap: build CAP+5 messages then trim
+let big = [];
+for (let i = 0; i < MSG_CAP + 5; i++) big.push(makeMessage(big, { channelId: ch1, body: 'm' + i, createdAt: '2026-06-01T' + String(10 + Math.floor(i / 60)).padStart(2, '0') + ':' + String(i % 60).padStart(2, '0') + ':00Z' }));
+const capped = capChannel(big, ch1);
+ok(capped.length === MSG_CAP, 'capChannel trims to MSG_CAP');
+ok(capped[0].body === 'm5', 'capChannel keeps the most recent');
+ok(searchMessages(msgs, 'REPLY').length === 1 && searchMessages(msgs, 'U One').length === 1, 'searchMessages by body + author');
+ok(seedChannels(seed.projects).length === 3 && makeChannel({ projectId: 'pz' }).type === 'project', 'seedChannels/makeChannel');
+const vmsg = makeMessage([], { channelId: ch1, body: '', voice: { id: 'v1', dur: 7, mime: 'audio/webm' } });
+ok(vmsg.voice && vmsg.voice.id === 'v1' && vmsg.voice.dur === 7, 'message carries a voice ref');
+ok(makeMessage([], { channelId: ch1, body: 'hi' }).voice === null, 'non-voice message has null voice');
+
+section('deliveries + dispatcher');
+const { makeDelivery, deliveryRisk, deliverySummary, deliveriesFor } = await import('../src/js/deliveries.js');
+const { analyzeField, fallbackBrief, mentionsDispatcher, DISPATCHER } = await import('../src/js/dispatcher.js');
+ok(seed.deliveries.length === 6 && seed.deliveries.every((d) => d.id && d.due), 'seed has 6 deliveries');
+ok(makeDelivery([], { projectId: 'p1', status: 'bogus' }).status === 'scheduled', 'delivery invalid status → default');
+ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), -3) }).late === true, 'deliveryRisk late');
+ok(deliveryRisk({ status: 'delayed', due: Dates.addDays(Dates.today(), 5) }).late === true, 'delayed status counts as late');
+ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), 1) }).dueSoon === true, 'deliveryRisk due soon');
+ok(deliveryRisk({ status: 'delivered', due: '2020-01-01' }).late === false, 'delivered never late');
+const dsum = deliverySummary(seed.deliveries, 'all');
+ok(dsum.late >= 2 && dsum.total === 6, 'deliverySummary counts late');
+const findings = analyzeField(seed);
+ok(findings.some((f) => f.kind === 'delivery-late' && f.channelId === channelIdForProject('p1')), 'dispatcher flags late delivery → project channel');
+ok(findings.every((f) => f.key && f.channelId && f.severity), 'findings carry key/channel/severity');
+ok(findings.length === new Set(findings.map((f) => f.key)).size, 'finding keys are unique (dedupe-able)');
+const brief = fallbackBrief(seed, 'p1');
+ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a digest');
+ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
+ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} units: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

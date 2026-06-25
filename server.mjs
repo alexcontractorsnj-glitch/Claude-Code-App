@@ -14,7 +14,7 @@
 // ============================================================================
 import http from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedState, makeTask, applyTaskPatch, normalizeState, nextBaselineId } from './src/js/seed.js';
@@ -23,6 +23,9 @@ import { makeDoc, DOC_KINDS } from './src/js/docs.js';
 import { makeChangeOrder, CO_STATUSES } from './src/js/changeorders.js';
 import { makeReport } from './src/js/fieldreports.js';
 import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
+import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
+import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
+import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -32,13 +35,31 @@ import {
 } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.argv[2] || process.env.PORT || 8000;
 const ROOT = __dirname;
+
+// Load a gitignored .env so secrets (e.g. ANTHROPIC_API_KEY for the AI
+// dispatcher) can live in a file instead of the shell. Zero-dep KEY=VALUE parser;
+// real environment variables always win over the file.
+(function loadDotenv() {
+  try {
+    for (const line of readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) {
+        process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+      }
+    }
+  } catch { /* no .env — fine */ }
+})();
+
+const PORT = process.argv[2] || process.env.PORT || 8000;
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'schedule.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.json');
 const AUDIT_CAP = 500;                          // keep the most recent N entries
+const VOICE_FILE = path.join(DATA_DIR, 'voice.json');
+const VOICE_CAP = 300;                           // keep the most recent N voice notes
+const MAX_VOICE_B64 = 1_400_000;                 // ~1MB of audio (≈ 45s opus) per note
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -52,6 +73,8 @@ const MIME = {
 let state;
 let users;                                    // [{ username, name, role, projects, passwordHash }]
 let audit = [];                               // append-only activity log (capped)
+let voice = {};                               // { id: { mime, data(base64), dur, by, at } } — audio blobs, kept out of /api/state
+let sse = new Set();                          // open Server-Sent-Events streams: { res, user }
 let writeChain = Promise.resolve();           // serialize writes
 
 async function loadState() {
@@ -89,6 +112,16 @@ async function loadAudit() {
   return [];
 }
 
+async function loadVoice() {
+  if (existsSync(VOICE_FILE)) {
+    try { const v = JSON.parse(await readFile(VOICE_FILE, 'utf8')); if (v && typeof v === 'object') return v; }
+    catch { /* corrupt → start fresh */ }
+  }
+  return {};
+}
+const persistVoice = () => persist(VOICE_FILE, voice);
+let voiceSeq = 0;
+
 // Append an immutable activity entry, attributed to the acting session user.
 let auditSeq = 0;
 function logAudit(actor, action, entry = {}) {
@@ -106,8 +139,30 @@ function logAudit(actor, action, entry = {}) {
 
 // Global revision: bumped on every write so clients can detect others' edits
 // (sent as an ETag) and we can serve cheap 304s when nothing changed.
-function bump() { state.rev = (state.rev || 0) + 1; return state.rev; }
+function bump() { state.rev = (state.rev || 0) + 1; sseNotify(); return state.rev; }
 const etag = () => '"' + (state.rev || 0) + '"';
+
+// --- Live event stream (SSE) ------------------------------------------------
+// One push channel per connected client. We broadcast a tiny `sync` signal with
+// the new global rev on every write (clients then pull /api/state — instant,
+// no per-entity wiring), plus ephemeral `presence` and `typing` events.
+function sseSend(client, event, data) {
+  try { client.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
+  catch { sse.delete(client); }
+}
+function sseBroadcast(event, data) { for (const c of [...sse]) sseSend(c, event, data); }
+function sseToUser(username, event, data) {
+  let n = 0;
+  for (const c of [...sse]) if (c.user.username === username) { sseSend(c, event, data); n += 1; }
+  return n;
+}
+function sseNotify() { sseBroadcast('sync', { rev: state.rev || 0 }); }
+function onlineUsers() {
+  const seen = new Map();
+  for (const c of sse) if (!seen.has(c.user.username)) seen.set(c.user.username, { username: c.user.username, name: c.user.name });
+  return [...seen.values()];
+}
+function broadcastPresence() { sseBroadcast('presence', { online: onlineUsers() }); }
 
 // Edit attribution comes from the authenticated session — it can't be spoofed
 // by a header. `actor` is the session user resolved by the auth gate.
@@ -127,6 +182,129 @@ function persist(file, next) {
 const persistState = () => persist(DATA_FILE, state);
 const persistUsers = () => persist(AUTH_FILE, users);
 
+// --- AI Dispatcher ----------------------------------------------------------
+// Posts as a synthetic "Dispatcher" user; bypasses project scope (it's the
+// system). Proactive scan turns findings into channel messages (deduped via
+// state.dispatcher.posted). On @mention it runs a Claude tool-use agent that
+// can take real, audited actions — falling back to a rule-based digest when no
+// ANTHROPIC_API_KEY is configured.
+const DISPATCHER_ACTOR = { name: DISPATCHER.name, role: 'system' };
+
+function postDispatcher(channel, text, kind) {
+  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, createdAt: new Date().toISOString() });
+  state.messages.push(msg);
+  state.messages = capChannel(state.messages, channel.id);
+  bump();
+  persistState();
+  logAudit(DISPATCHER_ACTOR, kind === 'reply' ? 'dispatcher.reply' : 'dispatcher.alert', { targetId: msg.id, targetName: channel.name, projectId: channel.projectId, detail: text.slice(0, 80) });
+  return msg;
+}
+
+function runDispatcherScan() {
+  if (!state.dispatcher) state.dispatcher = { posted: {} };
+  const posted = state.dispatcher.posted || (state.dispatcher.posted = {});
+  let n = 0;
+  for (const f of analyzeField(state)) {
+    if (f.severity === 'low' || posted[f.key]) continue;
+    const channel = (state.channels || []).find((c) => c.id === f.channelId);
+    if (!channel) continue;
+    postDispatcher(channel, f.text, 'alert');
+    posted[f.key] = new Date().toISOString();
+    if (++n >= 6) break;                              // don't flood a single scan
+  }
+  if (n) persistState();
+  return n;
+}
+
+async function callClaude(system, messages) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const model = process.env.DISPATCHER_MODEL || 'claude-opus-4-8';
+  try {
+    const res = await fetch((process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com') + '/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, max_tokens: 1024, system, tools: DISPATCHER_TOOLS, messages }),
+    });
+    if (!res.ok) { console.error('dispatcher: Claude HTTP', res.status, (await res.text()).slice(0, 200)); return null; }
+    return await res.json();
+  } catch (e) { console.error('dispatcher: Claude error', e.message); return null; }
+}
+
+function execDispatcherTool(name, input, actor) {
+  const by = actor ? '@' + actor.username : 'dispatcher';
+  try {
+    if (name === 'get_field_status') {
+      const pid = input.projectId || 'all';
+      const tasks = (state.tasks || []).filter((t) => pid === 'all' || t.projectId === pid);
+      return {
+        project: pid, today: new Date().toISOString().slice(0, 10),
+        deliveries: deliverySummary(state.deliveries, pid),
+        openTasks: tasks.filter((t) => t.status !== 'done' && !t.milestone).length,
+        blocked: tasks.filter((t) => t.status === 'blocked').length,
+        findings: analyzeField(state).filter((f) => pid === 'all' || f.projectId === pid).map((f) => ({ severity: f.severity, text: f.text })),
+      };
+    }
+    if (name === 'reschedule_task') {
+      const t = (state.tasks || []).find((x) => x.id === input.taskId);
+      if (!t) return { ok: false, error: 'task not found' };
+      const patch = {}; if (input.start) patch.start = input.start; if (input.end) patch.end = input.end;
+      applyTaskPatch(t, patch); t.lastEditedBy = DISPATCHER.name; t.lastEditedAt = new Date().toISOString(); t.rev = (t.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: t.id, targetName: t.name, projectId: t.projectId, detail: `reschedule (${by}): ${JSON.stringify(patch)}` });
+      return { ok: true, task: t.id, start: t.start, end: t.end };
+    }
+    if (name === 'set_task_status') {
+      const t = (state.tasks || []).find((x) => x.id === input.taskId);
+      if (!t) return { ok: false, error: 'task not found' };
+      applyTaskPatch(t, { status: input.status }); t.lastEditedBy = DISPATCHER.name; t.rev = (t.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: t.id, targetName: t.name, projectId: t.projectId, detail: `status ${t.status} (${by})` });
+      return { ok: true, task: t.id, status: t.status, progress: t.progress };
+    }
+    if (name === 'update_delivery') {
+      const d = (state.deliveries || []).find((x) => x.id === input.deliveryId);
+      if (!d) return { ok: false, error: 'delivery not found' };
+      if (input.status && DELIVERY_STATUSES.includes(input.status)) d.status = input.status;
+      if (input.due) d.due = input.due;
+      d.updatedBy = DISPATCHER.name; d.updatedAt = new Date().toISOString(); d.rev = (d.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: d.id, targetName: d.item, projectId: d.projectId, detail: `delivery ${d.status} due ${d.due} (${by})` });
+      return { ok: true, delivery: d.id, status: d.status, due: d.due };
+    }
+    if (name === 'create_punch_item') {
+      if (!Array.isArray(state.punch)) state.punch = [];
+      const p = makePunchItem(state.punch, { projectId: input.projectId, title: input.title, location: input.location, priority: input.priority, createdBy: DISPATCHER.name, createdAt: new Date().toISOString() });
+      state.punch.push(p); bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId, detail: `punch via ${by}` });
+      return { ok: true, punch: p.id, number: p.number };
+    }
+    return { ok: false, error: 'unknown tool' };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+async function dispatcherReply(channel, actor) {
+  // No key → deterministic field digest.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return postDispatcher(channel, fallbackBrief(state, channel.projectId) + '\n\n_(AI offline — set ANTHROPIC_API_KEY for the full assistant.)_', 'reply');
+  }
+  const recent = state.messages.filter((m) => m.channelId === channel.id).slice(-8).map((m) => `${m.authorName}: ${m.body}`).join('\n');
+  const system = dispatcherSystem(state, actor && actor.name);
+  const messages = [{ role: 'user', content: `Recent conversation in channel "${channel.name}" (project ${channel.projectId}):\n${recent}\n\nThe latest message mentions you (@dispatcher). Respond as the Dispatcher — check status first, take any clearly-requested actions, and reply concisely.` }];
+  let text = null;
+  try {
+    for (let step = 0; step < 6; step++) {
+      const resp = await callClaude(system, messages);
+      if (!resp || !Array.isArray(resp.content)) break;
+      messages.push({ role: 'assistant', content: resp.content });
+      const toolUses = resp.content.filter((b) => b.type === 'tool_use');
+      if (!toolUses.length) { text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim(); break; }
+      messages.push({ role: 'user', content: toolUses.map((tu) => ({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(execDispatcherTool(tu.name, tu.input, actor)) })) });
+    }
+  } catch (e) { console.error('dispatcher: agent', e.message); }
+  return postDispatcher(channel, text || fallbackBrief(state, channel.projectId), 'reply');
+}
+
 // --- HTTP helpers -----------------------------------------------------------
 function send(res, code, payload, headers = {}) {
   const body = payload == null ? '' : JSON.stringify(payload);
@@ -137,7 +315,7 @@ function send(res, code, payload, headers = {}) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on('data', (c) => { data += c; if (data.length > 2e6) req.destroy(); });   // headroom for voice-note uploads
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
     req.on('error', reject);
   });
@@ -239,8 +417,12 @@ async function handleApi(req, res, urlPath) {
     // Authorization: reads need a session; writes need pm+; admin ops need admin.
     const isWrite = method !== 'GET' && method !== 'HEAD';
     const adminOnly = resource === 'reset' || resource === 'users';
+    // Marking a channel read or sending a typing ping is a per-user, ephemeral
+    // signal — allowed for any signed-in user (incl. read-only monitors).
+    const ephemeral = (resource === 'channels' && (sub === 'read' || sub === 'typing') && method === 'POST')
+      || (resource === 'signal' && method === 'POST');
     if (adminOnly && !can(actor.role, 'admin')) return send(res, 403, { error: 'admin privilege required' });
-    if (isWrite && !adminOnly && !can(actor.role, 'write')) {
+    if (isWrite && !adminOnly && !ephemeral && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required (read-only role)' });
     }
     // Baseline is schedule-wide → only an unrestricted writer (admin / global pm).
@@ -250,6 +432,38 @@ async function handleApi(req, res, urlPath) {
     // Activity log is visible to writers and admins.
     if (resource === 'audit' && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required' });
+    }
+
+    // Live event stream — long-lived response; do not route through send().
+    if (resource === 'stream' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 3000\n\n');
+      const client = { res, user: actor };
+      sse.add(client);
+      sseSend(client, 'sync', { rev: state.rev || 0 });
+      sseSend(client, 'presence', { online: onlineUsers() });
+      broadcastPresence();
+      const ka = setInterval(() => sseSend(client, 'ping', { t: 1 }), 25000);
+      req.on('close', () => { clearInterval(ka); sse.delete(client); broadcastPresence(); });
+      return;
+    }
+
+    // Typing indicator — ephemeral, relayed to other streams, never stored.
+    if (resource === 'channels' && method === 'POST' && id && sub === 'typing') {
+      if ((state.channels || []).some((c) => c.id === id)) sseBroadcast('typing', { channelId: id, user: actor.username, name: actor.name });
+      return send(res, 204, null);
+    }
+
+    // WebRTC call signaling — relay offer/answer/ICE/end to the target user's
+    // live streams. The server is a dumb relay (no media passes through it).
+    if (resource === 'signal' && method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      if (!body.to || !body.type) return send(res, 400, { error: 'to and type are required' });
+      const delivered = sseToUser(body.to, 'call', {
+        type: body.type, from: actor.username, fromName: actor.name,
+        sdp: body.sdp, candidate: body.candidate, video: body.video,
+      });
+      return send(res, 200, { delivered });
     }
 
     if (resource === 'users') {
@@ -503,6 +717,105 @@ async function handleApi(req, res, urlPath) {
       }
     }
 
+    if (resource === 'voice') {
+      if (method === 'POST' && !id) {                 // upload a voice note → { id, dur, mime }
+        const body = await readBody(req);
+        const data = String(body.data || '');
+        if (!data) return send(res, 400, { error: 'no audio data' });
+        if (data.length > MAX_VOICE_B64) return send(res, 413, { error: 'voice note too large (max ~45s)' });
+        const vid = 'v' + Date.now().toString(36) + (voiceSeq++).toString(36);
+        voice[vid] = { mime: typeof body.mime === 'string' ? body.mime : 'audio/webm', data, dur: Math.min(120, +body.dur || 0), by: actor.username, at: new Date().toISOString() };
+        const ids = Object.keys(voice);
+        if (ids.length > VOICE_CAP) ids.slice(0, ids.length - VOICE_CAP).forEach((k) => delete voice[k]);  // trim oldest
+        persistVoice();
+        return send(res, 201, { id: vid, dur: voice[vid].dur, mime: voice[vid].mime });
+      }
+      if (method === 'GET' && id) {                    // stream a voice note's audio
+        const v = voice[id];
+        if (!v) return send(res, 404, { error: 'voice note not found' });
+        const buf = Buffer.from(v.data, 'base64');
+        res.writeHead(200, { 'Content-Type': v.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000' });
+        return res.end(buf);
+      }
+    }
+
+    if (resource === 'messages') {
+      if (!Array.isArray(state.messages)) state.messages = [];
+      if (method === 'POST' && !id) {                 // send a message to a channel
+        const body = await readBody(req);
+        const ch = (state.channels || []).find((c) => c.id === body.channelId);
+        if (!ch) return send(res, 400, { error: 'unknown channel' });
+        // Posting to a project channel needs write access to that project.
+        if (ch.type === 'project' && !canEditProject(actor, ch.projectId)) {
+          return send(res, 403, { error: 'you do not have access to that project' });
+        }
+        const vref = body.voice && body.voice.id && voice[body.voice.id]
+          ? { id: body.voice.id, dur: voice[body.voice.id].dur, mime: voice[body.voice.id].mime } : null;
+        const msg = makeMessage(state.messages, {
+          channelId: ch.id, authorId: actor.username, authorName: actor.name,
+          body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
+          voice: vref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+        });
+        if (!msg.body && !msg.attachments.length && !msg.voice) return send(res, 400, { error: 'empty message' });
+        state.messages.push(msg);
+        state.messages = capChannel(state.messages, ch.id);
+        state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
+        bump(); await persistState();
+        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.body.slice(0, 80) });
+        // @dispatcher → the AI replies asynchronously (posts a follow-up message).
+        if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor).catch((e) => console.error('dispatcher', e));
+        return send(res, 201, msg, { ETag: etag() });
+      }
+    }
+
+    if (resource === 'channels' && method === 'POST' && id && sub === 'read') {
+      const ch = (state.channels || []).find((c) => c.id === id);
+      if (!ch) return send(res, 404, { error: 'channel not found' });
+      const body = await readBody(req).catch(() => ({}));
+      state.reads = setRead(state.reads, actor.username, ch.id, body.at || new Date().toISOString());
+      bump(); await persistState();
+      return send(res, 200, { channelId: ch.id, at: state.reads[actor.username][ch.id] }, { ETag: etag() });
+    }
+
+    if (resource === 'deliveries') {
+      if (!Array.isArray(state.deliveries)) state.deliveries = [];
+      if (method === 'POST' && !id) {
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const d = makeDelivery(state.deliveries, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.deliveries.push(d);
+        bump(); await persistState();
+        logAudit(actor, 'delivery.create', { targetId: d.id, targetName: d.item, projectId: d.projectId });
+        return send(res, 201, d, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const d = state.deliveries.find((x) => x.id === id);
+        if (!d) return send(res, 404, { error: 'delivery not found' });
+        if (!canEditProject(actor, d.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['item', 'supplier', 'qty', 'due', 'status', 'taskId', 'notes'].forEach((k) => { if (body[k] !== undefined) d[k] = body[k]; });
+        if (!DELIVERY_STATUSES.includes(d.status)) d.status = 'scheduled';
+        d.updatedBy = actor.name; d.updatedAt = new Date().toISOString(); d.rev = (d.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'delivery.update', { targetId: d.id, targetName: d.item, projectId: d.projectId, detail: `${d.status} due ${d.due}` });
+        return send(res, 200, d, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const d = state.deliveries.find((x) => x.id === id);
+        if (!d) return send(res, 404, { error: 'delivery not found' });
+        if (!canEditProject(actor, d.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.deliveries = state.deliveries.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'delivery.delete', { targetName: d.item, projectId: d.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'dispatcher' && method === 'POST' && id === 'scan') {
+      const n = runDispatcherScan();
+      return send(res, 200, { posted: n }, { ETag: etag() });
+    }
+
     if (resource === 'tasks') {
       if (method === 'GET' && id && sub === 'history') {
         // Full audit trail for one task (any authenticated user may view).
@@ -591,10 +904,20 @@ const server = http.createServer(async (req, res) => {
 state = await loadState();
 users = await loadUsers();
 audit = await loadAudit();
+voice = await loadVoice();
 server.listen(PORT, () => {
   console.log(`\n  BuildFlow ERP Schedule  →  http://localhost:${PORT}`);
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);
   console.log(`  Auth                    →  sign in required · demo: admin/admin123 (admin),`);
   console.log(`                              awhitfield/build123 (PM·Riverside), psandoval/north123 (PM·Northgate+Civic), viewer/view123`);
+  console.log(`  Dispatcher              →  ${process.env.ANTHROPIC_API_KEY ? 'Claude agent ON' : 'rule-based (set ANTHROPIC_API_KEY for AI)'}\n`);
   console.log(`  Persisting to           →  ${path.relative(ROOT, DATA_FILE)} + auth.json + audit.json\n`);
 });
+
+// Proactive monitoring: scan the field every few minutes and post NEW findings
+// into the relevant project channels (deduped, so it never repeats itself).
+const DISPATCH_INTERVAL = +process.env.DISPATCHER_SCAN_MS || 300000;   // 5 min
+if (typeof setInterval === 'function') {
+  const timer = setInterval(() => { try { runDispatcherScan(); } catch (e) { console.error('dispatcher scan', e.message); } }, DISPATCH_INTERVAL);
+  if (timer.unref) timer.unref();
+}

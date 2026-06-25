@@ -14,6 +14,8 @@ import { renderBilling } from './views/billing.js';
 import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
+import { renderDeliveries } from './views/deliveries.js';
+import { renderMessages } from './views/messages.js';
 import { renderTestimonials } from './views/testimonials.js';
 import { DOC_KINDS } from './docs.js';
 import { CO_STATUSES } from './changeorders.js';
@@ -64,6 +66,8 @@ const VIEWS = {
   documents: { label: 'Documents', icon: '✉', render: renderDocuments },
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
+  deliveries: { label: 'Deliveries', icon: '🚚', render: renderDeliveries },
+  messages: { label: 'Messages', icon: '💬', render: renderMessages },
   testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
 };
 
@@ -1157,6 +1161,53 @@ function renderShell(root, authState) {
   if (!built) buildApp(root); else { renderHeader(root); renderActiveView(); }
 }
 
+// --- Call overlay (1:1 audio/video) -----------------------------------------
+let callRoot = null, vLocal = null, vRemote = null;
+const callInitials = (n) => String(n || '?').split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+
+function renderCallUI(s) {
+  if (!s || s.state === 'idle') { if (callRoot) { callRoot.remove(); callRoot = null; vLocal = vRemote = null; } return; }
+  if (!callRoot) { callRoot = el('div', { class: 'call-ui' }); document.body.appendChild(callRoot); }
+  if (!vRemote) vRemote = el('video', { class: 'call-remote', autoplay: '', playsinline: '' });
+  if (!vLocal) { vLocal = el('video', { class: 'call-local', autoplay: '', playsinline: '' }); vLocal.muted = true; }
+  if (vRemote.srcObject !== (s.remote || null)) vRemote.srcObject = s.remote || null;
+  if (vLocal.srcObject !== (s.local || null)) vLocal.srcObject = s.local || null;
+  clear(callRoot);
+  const c = store.calls;
+  const name = (s.peer && s.peer.name) || 'Caller';
+  const avatar = el('div', { class: 'call-avatar' }, callInitials(name));
+
+  if (s.state === 'ringing') {
+    callRoot.appendChild(el('div', { class: 'call-card' }, [
+      avatar, el('div', { class: 'call-name' }, name),
+      el('div', { class: 'call-sub' }, `Incoming ${s.video ? 'video' : 'audio'} call…`),
+      el('div', { class: 'call-actions' }, [
+        el('button', { class: 'call-btn decline', onclick: () => c.decline() }, '✕ Decline'),
+        el('button', { class: 'call-btn accept', onclick: () => c.accept().catch(() => store._notify('Mic/camera unavailable.', 'warn')) }, '✓ Accept'),
+      ]),
+    ]));
+    return;
+  }
+  if (s.state === 'calling' || s.state === 'ended') {
+    callRoot.appendChild(el('div', { class: 'call-card' }, [
+      avatar, el('div', { class: 'call-name' }, name),
+      el('div', { class: 'call-sub' }, s.state === 'ended' ? 'Call ended' : `Calling…`),
+      s.state === 'calling' ? el('div', { class: 'call-actions' }, [el('button', { class: 'call-btn decline', onclick: () => c.hangup() }, 'Cancel')]) : null,
+    ]));
+    return;
+  }
+  // connected
+  const stage = el('div', { class: 'call-stage' + (s.video ? '' : ' audio') });
+  if (s.video) { stage.appendChild(vRemote); stage.appendChild(vLocal); }
+  else stage.appendChild(el('div', { class: 'call-audioface' }, [avatar, el('div', { class: 'call-name' }, name), el('div', { class: 'call-sub' }, 'On call')]));
+  callRoot.appendChild(stage);
+  callRoot.appendChild(el('div', { class: 'call-bar' }, [
+    el('button', { class: 'call-ctl' + (s.muted ? ' on' : ''), title: 'Mute', onclick: () => c.toggleMute() }, s.muted ? '🔇' : '🎙'),
+    s.video ? el('button', { class: 'call-ctl' + (s.cameraOff ? ' on' : ''), title: 'Camera', onclick: () => c.toggleCamera() }, s.cameraOff ? '📷̶' : '📷') : null,
+    el('button', { class: 'call-ctl hangup', title: 'Hang up', onclick: () => c.hangup() }, '📞'),
+  ]));
+}
+
 // --- Boot -------------------------------------------------------------------
 export function boot() {
   const root = document.getElementById('app');
@@ -1179,6 +1230,7 @@ export function boot() {
   });
   store.subscribe(() => renderActiveView());
   store.onAuth((authState) => renderShell(root, authState));
+  store.onCall((snap) => renderCallUI(snap));
 
   renderShell(root, store.authState);
 }

@@ -7,6 +7,9 @@
 
 export const SCHEMA_VERSION = 1;
 
+import { seedChannels, makeMessage, channelIdForProject } from './messaging.js';
+import { makeDelivery } from './deliveries.js';
+
 // --- Construction trades (drives color + grouping) --------------------------
 export const TRADES = {
   sitework:    { label: 'Sitework / Excavation', color: '#8d6e63' },
@@ -194,9 +197,34 @@ export function seedState() {
     { id: 'pi3', projectId: 'p3', taskId: 't24', number: 'P-001', title: 'Ceiling tile alignment in lobby', location: 'Lobby grid', trade: 'finishes', status: 'accepted', priority: 'normal', assignedTo: 'Finishline Interiors', attachments: [], createdBy: 'P. Sandoval', createdAt: Dates.addDays(t0i, -5), updatedBy: 'P. Sandoval', updatedAt: Dates.addDays(t0i, -1), rev: 2 },
   ];
 
+  // --- Seed material deliveries (some late / due-soon for the dispatcher) ---
+  const deliveries = [];
+  const dl = (projectId, item, supplier, dueOffset, status, taskId) => {
+    deliveries.push(makeDelivery(deliveries, { projectId, item, supplier, due: Dates.addDays(t0i, dueOffset), status, taskId, createdBy: 'Planning', createdAt: Dates.addDays(t0i, -7) }));
+  };
+  dl('p1', 'Rebar — #5/#6 (footings)', 'Nucor Steel', -2, 'delayed', 't4');     // LATE
+  dl('p1', 'Structural steel — sequence A', 'Summit Mill', 6, 'confirmed', 't7');
+  dl('p1', 'Ready-mix concrete (foundation)', 'Riverside Concrete', 1, 'scheduled', 't5'); // due soon, unconfirmed
+  dl('p2', 'Tilt-up embed plates', 'Dayton Superior', 0, 'scheduled', 't16');   // due TODAY, unconfirmed
+  dl('p2', 'Roof joists & deck', 'Vulcraft', 9, 'scheduled', 't18');
+  dl('p3', 'MEP rough-in package', 'Ferguson', -1, 'delayed', 't23');           // LATE
+
+  // --- Seed team-messaging: one channel per project + a little chatter -------
+  const channels = seedChannels(projects);
+  const messages = [];
+  const at = (mins) => new Date(Date.parse(t0i + 'T07:00:00') + mins * 60000).toISOString();
+  const say = (projectId, authorId, authorName, body, mins) => {
+    messages.push(makeMessage(messages, { channelId: channelIdForProject(projectId), authorId, authorName, body, createdAt: at(mins) }));
+  };
+  say('p1', 'awhitfield', 'A. Whitfield', 'Morning all — footing inspection at 9. Keep grid A–C clear for the inspector.', 0);
+  say('p1', 'c2lead', 'D. Okafor', 'Copy. Forms stripped at D, we’re ready. Pump truck confirmed for 1pm.', 14);
+  say('p1', 'awhitfield', 'A. Whitfield', 'Heads up @psandoval steel shop drawings still under review — may slip erection a day.', 33);
+  say('p2', 'psandoval', 'P. Sandoval', 'Tilt-up beds 4–7 casting today. High-wind watch this afternoon — crane ops monitor.', 5);
+  say('p2', 'c1lead', 'M. Rodriguez', 'Pad prep done. Embed plates delivered and staged.', 22);
+  say('p3', 'psandoval', 'P. Sandoval', 'Civic: MEP rough-in still blocked on the chase-2 RFI. Chasing the engineer today.', 9);
   // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
   // is the full history. They share the same object reference for the active one.
-  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, punch, version: SCHEMA_VERSION, rev: 1 };
+  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, punch, deliveries, channels, messages, reads: {}, dispatcher: { posted: {} }, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // Next baseline id for a state (b1, b2, …).
@@ -254,6 +282,18 @@ export function normalizeState(state) {
   if (!Array.isArray(state.changeOrders)) state.changeOrders = [];
   if (!Array.isArray(state.reports)) state.reports = [];
   if (!Array.isArray(state.punch)) state.punch = [];
+  // Messaging: ensure arrays + a default channel for every project.
+  if (!Array.isArray(state.channels)) state.channels = [];
+  if (!Array.isArray(state.messages)) state.messages = [];
+  if (!Array.isArray(state.deliveries)) state.deliveries = [];
+  if (!state.reads || typeof state.reads !== 'object') state.reads = {};
+  if (!state.dispatcher || typeof state.dispatcher !== 'object') state.dispatcher = { posted: {} };
+  if (!state.dispatcher.posted) state.dispatcher.posted = {};
+  (state.projects || []).forEach((p) => {
+    if (!state.channels.some((c) => c.id === channelIdForProject(p.id))) {
+      state.channels.push({ id: channelIdForProject(p.id), type: 'project', projectId: p.id, name: p.name, memberIds: [], createdBy: null, createdAt: new Date().toISOString(), archived: false });
+    }
+  });
   state.reports.forEach((r) => { if (!Array.isArray(r.attachments)) r.attachments = []; });
   if (state.baseline === undefined) state.baseline = null;
   // Migrate single-baseline states to the baselines[] history model.

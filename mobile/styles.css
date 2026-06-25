@@ -140,7 +140,7 @@ button { cursor: pointer; }
 
 /* ---- tab bar ---- */
 .cf-tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   background: rgba(22,27,34,.95); backdrop-filter: blur(12px);
   border-top: 1px solid var(--line); padding-bottom: var(--safe-b); }
 .cf-tab { position: relative; background: none; border: none; color: var(--text-faint);
@@ -237,3 +237,65 @@ textarea.cf-input { resize: vertical; }
 .cf-toast.show { opacity: 1; transform: translateY(0); }
 .cf-toast.warn { border-color: rgba(245,166,35,.5); color: var(--accent-2); }
 .cf-toast.info { border-color: rgba(59,130,246,.4); }
+
+/* ---- Chat tab ---- */
+.cf-badge-inline { position: static; margin: 0 0 0 auto; }
+.cf-mention { color: var(--accent-2); font-weight: 700; }
+.cf-main.chatting { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.cf-chat-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex-shrink: 0; }
+.cf-back { background: none; border: none; color: var(--accent); font-size: 28px; line-height: 1; padding: 0 6px 4px; }
+.cf-chat-title { font-weight: 800; font-size: 16px; }
+.cf-chat-stream { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 7px; }
+.cf-chat-day { text-align: center; font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; }
+.cf-bubble-row { display: flex; }
+.cf-bubble-row.mine { justify-content: flex-end; }
+.cf-bubble { max-width: 80%; background: var(--bg-3); border: 1px solid var(--line); border-radius: 14px; border-top-left-radius: 4px; padding: 8px 11px; }
+.cf-bubble.mine { background: rgba(245,166,35,.14); border-color: rgba(245,166,35,.3); border-top-left-radius: 14px; border-top-right-radius: 4px; }
+.cf-bubble.pending { opacity: .7; }
+.cf-bubble-author { font-size: 11.5px; font-weight: 700; color: var(--accent-2); margin-bottom: 2px; }
+.cf-bubble-body { font-size: 14.5px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.cf-bubble-meta { display: flex; gap: 5px; justify-content: flex-end; align-items: center; font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+.cf-tick { font-size: 10px; }
+.cf-chat-composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px calc(10px + var(--safe-b)); border-top: 1px solid var(--line); background: var(--bg-2); flex-shrink: 0; }
+.cf-chat-composer.readonly { justify-content: center; color: var(--text-faint); font-size: 13px; padding: 14px; }
+.cf-chat-input { flex: 1; resize: none; min-height: 42px; max-height: 120px; font-size: 16px; }
+.cf-chat-send { flex-shrink: 0; width: 46px; height: 46px; border-radius: 50%; border: none; background: var(--accent); color: #1a1206; font-size: 18px; font-weight: 800; }
+
+/* ---- Chat voice + dictation ---- */
+.cf-bubble-voice { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.cf-audio { height: 34px; width: 200px; max-width: 60vw; }
+.cf-voice-dur { font-size: 11px; color: var(--text-faint); }
+.cf-chat-ico { flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); font-size: 18px; }
+.cf-chat-ico.on, .cf-chat-ico.rec:active { background: var(--red); color: #fff; border-color: var(--red); }
+.cf-chat-composer.recording { align-items: center; gap: 10px; }
+.cf-rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--red); animation: recpulse 1s ease-in-out infinite; }
+.cf-rec-lbl { font-weight: 700; color: var(--red); }
+.cf-rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-dim); margin-right: auto; }
+.cf-rec-cancel { flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text-dim); font-size: 16px; }
+@keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* ---- Dispatcher (bot) bubbles ---- */
+.cf-bubble.bot { background: rgba(139,92,246,.14); border-color: rgba(139,92,246,.35); border-top-left-radius: 4px; }
+.cf-bubble.bot .cf-bubble-author { color: #b794f6; }
+
+/* ---- Typing indicator ---- */
+.cf-typing { font-size: 12px; font-style: italic; color: var(--text-faint); padding: 4px 14px; flex-shrink: 0; background: var(--bg-2); }
+
+/* ---- People online + calls ---- */
+.cf-person-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
+.cf-person-call { display: flex; align-items: center; gap: 6px; padding-right: 10px; }
+.cf-call-ico { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); font-size: 17px; }
+.cf-call { position: fixed; inset: 0; z-index: 1000; background: #0a0c10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: calc(20px + var(--safe-t)) 20px calc(20px + var(--safe-b)); }
+.cf-call-remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.cf-call-local { position: absolute; right: 14px; top: calc(14px + var(--safe-t)); width: 96px; height: 132px; object-fit: cover; border-radius: 12px; border: 2px solid rgba(255,255,255,.2); z-index: 2; transform: scaleX(-1); }
+.cf-call-face { display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 3; }
+.cf-call-avatar { width: 96px; height: 96px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #d9821a); color: #1a1206; display: grid; place-items: center; font-size: 34px; font-weight: 800; }
+.cf-call-name { font-size: 22px; font-weight: 800; color: #fff; }
+.cf-call-sub { font-size: 14px; color: var(--text-dim); z-index: 3; }
+.cf-call-actions { display: flex; gap: 40px; z-index: 3; margin-top: 10px; }
+.cf-call-btn { width: 68px; height: 68px; border-radius: 50%; border: none; font-size: 26px; color: #fff; }
+.cf-call-btn.accept { background: var(--green); } .cf-call-btn.decline { background: var(--red); }
+.cf-call-bar { position: absolute; bottom: calc(34px + var(--safe-b)); display: flex; gap: 22px; z-index: 4; }
+.cf-call-ctl { width: 60px; height: 60px; border-radius: 50%; border: none; background: rgba(255,255,255,.16); color: #fff; font-size: 24px; }
+.cf-call-ctl.on { background: var(--accent); color: #1a1206; }
+.cf-call-ctl.hangup { background: var(--red); transform: rotate(135deg); }

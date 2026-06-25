@@ -51,6 +51,89 @@ The field rules (task bucketing, the progress stepper, status coherence, and the
 outbox reducers) live in pure, unit-tested **`src/mobile/core.js`** — no DOM, no
 browser globals — so they ship in one place and are covered by `npm test`.
 
+## 💬 Messages — team communication & monitoring
+
+Built-in team messaging connects the office and the field, and gives PMs/admins a
+**communication monitor** on the web. It's **server-persistent** (history,
+search, audit, RBAC) — the deliberate Slack/Teams trade-off over consumer E2EE,
+so oversight is actually possible. See
+[`docs/messaging-research-and-plan.md`](docs/messaging-research-and-plan.md) for
+the research (WhatsApp/Slack/Procore) behind the design.
+
+- **One channel per project**, auto-provisioned. Posting to a project channel is
+  gated by that project's write **scope** (server-enforced); **reads are
+  portfolio-wide**, matching the rest of the app.
+- **Desktop — Messages view (the monitor):** channel list with unread badges +
+  last-message previews, the full conversation, `@mention` highlighting, a
+  composer, **search across all messages**, and **CSV export** per channel. A
+  scoped PM/viewer sees everything read-only where they can't post.
+- **Corefield — 💬 Chat tab:** WhatsApp-style bubbles with delivery ticks, day
+  separators, unread badges, and **offline send** (messages queue in the outbox
+  and replay on reconnect, just like every other field write).
+- **🎤 Voice notes + dictation:** record a voice note in either app (MediaRecorder
+  → uploaded to `POST /api/voice`, streamed back from `GET /api/voice/:id` so
+  audio never bloats the polled state; capped ~45s, demo mode embeds it locally),
+  or tap the 🎙 mic to **dictate** a message via on-device speech-to-text.
+- **Shared, tested core** (`src/js/messaging.js`): channels, messages, unread
+  counts, `@mention` parsing, search, and a per-channel **cap** (last 200) that
+  keeps the zero-DB JSON store bounded. Every send is **audited**
+  (`message.send`) and attributed to the session user.
+
+| Method & path | Action |
+|---|---|
+| `POST /api/messages` | send `{channelId, body}` (write + project scope) |
+| `POST /api/channels/:id/read` | set your read marker (any signed-in user) |
+
+**Real-time delivery (SSE).** A **Server-Sent-Events** stream (`GET /api/stream`)
+pushes a tiny `sync` signal on every write, so messages, dispatcher replies, and
+schedule edits land in **well under a second** (measured ~75 ms vs the 4 s poll),
+with **online presence** and **"typing…"** indicators riding the same stream.
+**ETag polling stays as the fallback** (and the static GitHub Pages demo, which
+has no server, runs chat in local mode on the seeded channels).
+
+**📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
+online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
+peer-to-peer **WebRTC**, with offer/answer/ICE **signaled over the same SSE
+stream** (`POST /api/signal` relays to the target user; no media touches the
+server) and public **STUN** for NAT traversal. Ring → accept/decline → in-call
+with mute, camera toggle, and hang-up, on desktop and phone.
+
+> **Honest limitation:** there's **no TURN relay** (paid infra), so calls connect
+> on the same network and most home/office NATs, but **very restrictive or
+> symmetric-NAT networks won't connect** — adding a TURN server is the production
+> fix. The signaling + UI are built so that's a config change, not a rewrite.
+
+## 🤖 AI Dispatcher
+
+The **Dispatcher** is an AI agent that watches the field and acts on it. It posts
+as a participant in the team channels (purple 🤖 bubbles), so crews and PMs
+interact with it right where they already talk.
+
+- **Proactive monitoring:** scans the schedule + deliveries and posts **new**
+  findings into the relevant project channel — late/at-risk **deliveries**,
+  overdue & blocked tasks, slipping **milestones**, overdue RFIs, high-priority
+  punch items. It dedupes (never repeats a finding) and runs on a timer, or on
+  demand via **⚡ Scan now** in the Deliveries view (`POST /api/dispatcher/scan`).
+- **Conversational + action-taking:** `@dispatcher` in any channel and it
+  replies. With a Claude API key it runs a **tool-use agent** that can read
+  status and take **real, audited actions** — reschedule a task, change a task
+  status, update a delivery, or open a punch item — attributed to the dispatcher
+  on behalf of the asker.
+- **Deliveries** are a first-class entity (`src/js/deliveries.js`): item,
+  supplier, due date, status, and the task they feed. Managed from the
+  **🚚 Deliveries** view; the dispatcher's late/due-soon logic runs off them.
+
+**Wiring the key (optional but recommended):** copy `.env.example` to `.env` and
+set `ANTHROPIC_API_KEY` (the server auto-loads `.env`, which is gitignored).
+**Without a key the dispatcher still works** — it falls back to a deterministic
+rule-based field digest (and tells you the AI is offline). `DISPATCHER_MODEL`
+overrides the model. The brain is pure + tested (`src/js/dispatcher.js`); the
+server (`server.mjs`) owns the side-effects (posting, tool execution, the Claude
+Messages-API loop).
+
+> Like the rest of the app, the dispatcher needs the Node server — it's off on
+> the static GitHub Pages demo (no server, no key).
+
 ## Run it
 
 No build step, no `npm install` — pure ES modules + a zero-dependency Node server.
@@ -416,9 +499,15 @@ zero total float are flagged), not hard-coded.
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
 
-**Done recently:** ✅ **Corefield mobile field app** — installable PWA (Work /
-Punch / Reports), offline outbox with replay-on-reconnect, on the shared API +
-domain core · ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
+**Done recently:** ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
+channel, STUN) · ✅ **Real-time SSE** (instant delivery + presence + typing) ·
+✅ **AI Dispatcher** (Claude tool-use agent + deliveries, proactive alerts) ·
+✅ **Voice notes + dictation** · ✅ **Team messaging** — per-project channels with a web
+communication monitor (search + CSV export) and a Corefield Chat tab (bubbles,
+ticks, offline send), server-persistent + audited · ✅ **Corefield mobile field
+app** — installable PWA (Work / Punch / Reports), offline outbox with
+replay-on-reconnect, on the shared API + domain core · ✅ drag-to-reschedule on
+the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·

@@ -18,6 +18,12 @@ import { makeDoc } from './docs.js';
 import { makeChangeOrder } from './changeorders.js';
 import { makeReport } from './fieldreports.js';
 import { makePunchItem } from './punch.js';
+import {
+  makeMessage, capChannel, setRead, lastRead, unreadCount,
+  messagesForChannel, lastMessage, channelIdForProject,
+} from './messaging.js';
+import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
+import { CallManager } from './webrtc.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -77,6 +83,11 @@ class Store {
     this.role = null;             // server role when authenticated
     this.scope = [];              // project scope ([] = all / unrestricted)
     this.user = this._loadUser(); // display name (local identity, or session user)
+    this.onlineUsers = [];        // [{username,name}] currently connected (SSE presence)
+    this.typing = {};             // { channelId: { name: expiryMs } }
+    this._es = null;              // EventSource (live stream)
+    this.callListeners = new Set();
+    this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
   }
@@ -107,9 +118,11 @@ class Store {
   _applyUser(u) {
     if (!u) return;
     this.user = u.name || u.username;
+    this.username = u.username || u.name;       // stable id for message attribution + read state
     this.role = u.role;
     this.scope = Array.isArray(u.projects) ? u.projects : [];
   }
+  _uid() { return this.username || this.user || 'me'; }
 
   // ---- auth actions ----
   async login(username, password) {
@@ -130,6 +143,7 @@ class Store {
   async logout() {
     try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.role = null;
     this.authState = 'required';
     this._emitAuth();
@@ -210,6 +224,7 @@ class Store {
       this._cacheLocal(this.state);
       this.listeners.forEach((fn) => fn(this.state));
       this._startPolling();
+      this._startStream();
     }
     this._emitStatus();
   }
@@ -217,11 +232,74 @@ class Store {
   // Session expired (or revoked) mid-session → bounce to the login screen.
   _sessionLost() {
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.role = null;
     this.authState = 'required';
     this._setSyncing(false);
     this._emitAuth();
   }
+
+  // --- Live stream (SSE): instant updates + presence + typing ---------------
+  // A tiny `sync` signal triggers a conditional re-pull; polling stays as a
+  // fallback (and mostly returns 304 once the stream is live).
+  _startStream() {
+    if (this._es || typeof EventSource === 'undefined') return;
+    try { this._es = new EventSource(API + '/stream'); } catch { return; }
+    this._es.addEventListener('sync', (e) => { try { if (JSON.parse(e.data).rev !== this.rev) this._pull(); } catch { /* ignore */ } });
+    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = JSON.parse(e.data).online || []; this.listeners.forEach((fn) => fn(this.state)); } catch { /* ignore */ } });
+    this._es.addEventListener('typing', (e) => { try { const d = JSON.parse(e.data); if (d.user !== this.username) this._setTyping(d.channelId, d.name); } catch { /* ignore */ } });
+    this._es.addEventListener('call', (e) => { try { this.calls.handleSignal(JSON.parse(e.data)); } catch { /* ignore */ } });
+    this._es.onerror = () => { /* EventSource auto-reconnects; polling covers gaps */ };
+  }
+  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = []; }
+
+  // ---- calls (1:1 audio/video) ----
+  _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
+  onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
+  callPeer(peer, video) { return this.calls.call(peer, video); }
+  peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
+
+  _pull() {
+    if (this._pulling || this.mode !== 'remote') return;
+    this._pulling = true;
+    api('GET', '/state', null, this.rev != null ? { 'If-None-Match': '"' + this.rev + '"' } : {})
+      .then(({ status, data, etag }) => {
+        if (status === 304) return;
+        const newRev = revOf(etag) ?? (data && data.rev);
+        if (data && data.tasks && newRev !== this.rev) {
+          this.state = normalizeState(data); this.rev = newRev; this._cacheLocal(this.state);
+          this.listeners.forEach((fn) => fn(this.state));
+        }
+      })
+      .catch((e) => { if (e && e.status === 401) this._sessionLost(); })
+      .finally(() => { this._pulling = false; });
+  }
+
+  // Typing presence (4s TTL per typer), driven by relayed `typing` events.
+  _setTyping(channelId, name) {
+    this.typing[channelId] = this.typing[channelId] || {};
+    this.typing[channelId][name] = Date.now() + 4000;
+    this.listeners.forEach((fn) => fn(this.state));
+    clearTimeout(this._typingT);
+    this._typingT = setTimeout(() => this._pruneTyping(), 4200);
+  }
+  _pruneTyping() {
+    const now = Date.now(); let changed = false;
+    for (const c of Object.keys(this.typing)) for (const n of Object.keys(this.typing[c])) if (this.typing[c][n] <= now) { delete this.typing[c][n]; changed = true; }
+    if (changed) this.listeners.forEach((fn) => fn(this.state));
+  }
+  typingIn(channelId) {
+    const m = this.typing[channelId]; if (!m) return [];
+    const now = Date.now();
+    return Object.keys(m).filter((n) => m[n] > now && n !== this.user);
+  }
+  postTyping(channelId) {
+    const now = Date.now();
+    if (this._lastTyping && now - this._lastTyping < 2000) return;     // throttle
+    this._lastTyping = now;
+    if (this.mode === 'remote') api('POST', '/channels/' + channelId + '/typing').catch(() => {});
+  }
+  onlineCount() { return this.onlineUsers.length; }
 
   // Poll the server; only re-hydrate when the global rev advances past ours
   // (i.e. another client wrote). Cheap: 304 Not Modified when nothing changed.
@@ -588,6 +666,137 @@ class Store {
       api('DELETE', '/punch/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
     }
   }
+
+  // ---- messaging (channels + messages) ----
+  get channels() { return (this.state.channels || []).filter((c) => !c.archived); }
+  get messages() { return this.state.messages || []; }
+  channelFor(projectId) { return this.channels.find((c) => c.id === channelIdForProject(projectId)) || null; }
+  channel(id) { return this.channels.find((c) => c.id === id) || null; }
+  messagesFor(channelId) { return messagesForChannel(this.messages, channelId); }
+  lastMessageFor(channelId) { return lastMessage(this.messages, channelId); }
+  lastReadAt(channelId) { return lastRead(this.state.reads, this._uid(), channelId); }
+  unread(channelId) { return unreadCount(this.messages, channelId, this.lastReadAt(channelId), this._uid()); }
+  totalUnread() { return this.channels.reduce((a, c) => a + this.unread(c.id), 0); }
+  // Can the current user post to this channel? (project channels are scope-gated)
+  canPost(channelId) {
+    const ch = this.channel(channelId);
+    if (!ch) return false;
+    return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
+  }
+
+  async sendMessage(channelId, body, extra = {}) {
+    const ch = this.channel(channelId);
+    if (!ch) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that project’s channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/messages', { channelId, body, ...extra });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, { channelId, authorId: this._uid(), authorName: this.user, body, ...extra });
+    if (!msg.body && !msg.attachments.length) return null;
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
+  // Playback URL for a voice note: a demo data-URL, or the server stream.
+  voiceSrc(msg) {
+    if (!msg || !msg.voice) return null;
+    return msg.voice.url || ('/api/voice/' + msg.voice.id);
+  }
+
+  // Send a voice note. `clip` = { mime, b64, dur }. Remote uploads the audio to
+  // /api/voice (kept out of /api/state) then posts a message referencing it;
+  // local/demo embeds the audio as a data-URL on the message.
+  async sendVoice(channelId, clip) {
+    const ch = this.channel(channelId);
+    if (!ch || !clip || !clip.b64) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const up = await api('POST', '/voice', { mime: clip.mime, data: clip.b64, dur: clip.dur });
+        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id } });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, {
+      channelId, authorId: this._uid(), authorName: this.user,
+      voice: { url: `data:${clip.mime};base64,${clip.b64}`, dur: clip.dur, mime: clip.mime },
+    });
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
+  markRead(channelId) {
+    if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
+    const at = new Date().toISOString();
+    const before = this.lastReadAt(channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, at);
+    this._emit();
+    if (this.mode === 'remote' && before !== at) {
+      api('POST', '/channels/' + channelId + '/read', { at })
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; })
+        .catch(() => { /* read receipts are best-effort */ });
+    }
+  }
+
+  // ---- deliveries (what the dispatcher watches) ----
+  get deliveries() { return this.state.deliveries || []; }
+  deliveriesFor(projectId) { return deliveriesFor(this.deliveries, projectId); }
+  deliverySummary(projectId) { return deliverySummary(this.deliveries, projectId); }
+
+  async createDelivery(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.deliveries)) this.state.deliveries = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/deliveries', partial); this.rev = revOf(etag) ?? this.rev; this.state.deliveries.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const d = makeDelivery(this.state.deliveries, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.deliveries.push(d); this._emit(); return d;
+  }
+  updateDelivery(id, patch) {
+    const d = this.deliveries.find((x) => x.id === id);
+    if (!d || !this._guardProject(d.projectId)) return;
+    Object.assign(d, patch, { updatedBy: this.user, updatedAt: new Date().toISOString() });
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('PATCH', '/deliveries/' + id, patch).then(({ data, etag }) => { if (data && data.rev != null) d.rev = data.rev; this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+  deleteDelivery(id) {
+    const d = this.deliveries.find((x) => x.id === id);
+    if (d && !this._guardProject(d.projectId)) return;
+    this.state.deliveries = this.deliveries.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      api('DELETE', '/deliveries/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+  // Trigger a proactive dispatcher scan (admin/PM); returns #posted.
+  scanDispatcher() { return api('POST', '/dispatcher/scan').then((r) => (r.data && r.data.posted) || 0).catch(() => 0); }
 
   deleteTask(id) {
     const target = this.task(id);
