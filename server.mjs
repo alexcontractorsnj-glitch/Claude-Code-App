@@ -25,7 +25,9 @@ import { makeReport } from './src/js/fieldreports.js';
 import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
 import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
 import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
-import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
+import { makeIssue, ISSUE_SEVERITIES, ISSUE_STATUSES } from './src/js/issues.js';
+import { makeConstraint, CONSTRAINT_TYPES, CONSTRAINT_STATUSES } from './src/js/constraints.js';
+import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, callSummary, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -60,6 +62,9 @@ const AUDIT_CAP = 500;                          // keep the most recent N entrie
 const VOICE_FILE = path.join(DATA_DIR, 'voice.json');
 const VOICE_CAP = 300;                           // keep the most recent N voice notes
 const MAX_VOICE_B64 = 1_400_000;                 // ~1MB of audio (≈ 45s opus) per note
+const PHOTO_FILE = path.join(DATA_DIR, 'photos.json');
+const PHOTO_CAP = 500;                            // keep the most recent N photos
+const MAX_PHOTO_B64 = 1_800_000;                 // client compresses to ~1280px JPEG
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -74,6 +79,7 @@ let state;
 let users;                                    // [{ username, name, role, projects, passwordHash }]
 let audit = [];                               // append-only activity log (capped)
 let voice = {};                               // { id: { mime, data(base64), dur, by, at } } — audio blobs, kept out of /api/state
+let photos = {};                              // { id: { mime, data(base64), w, h, by, at } } — image blobs, kept out of /api/state
 let sse = new Set();                          // open Server-Sent-Events streams: { res, user }
 let writeChain = Promise.resolve();           // serialize writes
 
@@ -121,6 +127,16 @@ async function loadVoice() {
 }
 const persistVoice = () => persist(VOICE_FILE, voice);
 let voiceSeq = 0;
+
+async function loadPhotos() {
+  if (existsSync(PHOTO_FILE)) {
+    try { const v = JSON.parse(await readFile(PHOTO_FILE, 'utf8')); if (v && typeof v === 'object') return v; }
+    catch { /* corrupt → fresh */ }
+  }
+  return {};
+}
+const persistPhotos = () => persist(PHOTO_FILE, photos);
+let photoSeq = 0;
 
 // Append an immutable activity entry, attributed to the acting session user.
 let auditSeq = 0;
@@ -190,8 +206,8 @@ const persistUsers = () => persist(AUTH_FILE, users);
 // ANTHROPIC_API_KEY is configured.
 const DISPATCHER_ACTOR = { name: DISPATCHER.name, role: 'system' };
 
-function postDispatcher(channel, text, kind) {
-  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, createdAt: new Date().toISOString() });
+function postDispatcher(channel, text, kind, linkedTo) {
+  const msg = makeMessage(state.messages, { channelId: channel.id, authorId: DISPATCHER.id, authorName: DISPATCHER.name, body: text, linkedTo: linkedTo || null, createdAt: new Date().toISOString() });
   state.messages.push(msg);
   state.messages = capChannel(state.messages, channel.id);
   bump();
@@ -278,6 +294,14 @@ function execDispatcherTool(name, input, actor) {
       state.punch.push(p); bump(); persistState();
       logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId, detail: `punch via ${by}` });
       return { ok: true, punch: p.id, number: p.number };
+    }
+    if (name === 'clear_constraint') {
+      const c = (state.constraints || []).find((x) => x.id === input.constraintId);
+      if (!c) return { ok: false, error: 'constraint not found' };
+      c.status = 'cleared'; c.clearedBy = DISPATCHER.name; c.clearedAt = new Date().toISOString(); c.rev = (c.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: c.id, targetName: `${c.number} ${c.title}`, projectId: c.projectId, detail: `constraint cleared (${by})` });
+      return { ok: true, constraint: c.id, status: c.status };
     }
     return { ok: false, error: 'unknown tool' };
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
@@ -739,6 +763,28 @@ async function handleApi(req, res, urlPath) {
       }
     }
 
+    if (resource === 'photos') {
+      if (method === 'POST' && !id) {                 // upload a photo → { id, mime, w, h }
+        const body = await readBody(req);
+        const data = String(body.data || '');
+        if (!data) return send(res, 400, { error: 'no image data' });
+        if (data.length > MAX_PHOTO_B64) return send(res, 413, { error: 'photo too large' });
+        const pid = 'ph' + Date.now().toString(36) + (photoSeq++).toString(36);
+        photos[pid] = { mime: typeof body.mime === 'string' ? body.mime : 'image/jpeg', data, w: +body.w || 0, h: +body.h || 0, by: actor.username, at: new Date().toISOString() };
+        const ids = Object.keys(photos);
+        if (ids.length > PHOTO_CAP) ids.slice(0, ids.length - PHOTO_CAP).forEach((k) => delete photos[k]);
+        persistPhotos();
+        return send(res, 201, { id: pid, mime: photos[pid].mime, w: photos[pid].w, h: photos[pid].h });
+      }
+      if (method === 'GET' && id) {
+        const p = photos[id];
+        if (!p) return send(res, 404, { error: 'photo not found' });
+        const buf = Buffer.from(p.data, 'base64');
+        res.writeHead(200, { 'Content-Type': p.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000' });
+        return res.end(buf);
+      }
+    }
+
     if (resource === 'messages') {
       if (!Array.isArray(state.messages)) state.messages = [];
       if (method === 'POST' && !id) {                 // send a message to a channel
@@ -751,17 +797,19 @@ async function handleApi(req, res, urlPath) {
         }
         const vref = body.voice && body.voice.id && voice[body.voice.id]
           ? { id: body.voice.id, dur: voice[body.voice.id].dur, mime: voice[body.voice.id].mime } : null;
+        const pref = body.photo && body.photo.id && photos[body.photo.id]
+          ? { id: body.photo.id, mime: photos[body.photo.id].mime, w: photos[body.photo.id].w, h: photos[body.photo.id].h } : null;
         const msg = makeMessage(state.messages, {
           channelId: ch.id, authorId: actor.username, authorName: actor.name,
           body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
-          voice: vref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+          voice: vref, photo: pref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
         });
-        if (!msg.body && !msg.attachments.length && !msg.voice) return send(res, 400, { error: 'empty message' });
+        if (!msg.body && !msg.attachments.length && !msg.voice && !msg.photo) return send(res, 400, { error: 'empty message' });
         state.messages.push(msg);
         state.messages = capChannel(state.messages, ch.id);
         state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
         bump(); await persistState();
-        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.body.slice(0, 80) });
+        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.photo ? '📷 photo' : msg.body.slice(0, 80) });
         // @dispatcher → the AI replies asynchronously (posts a follow-up message).
         if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor).catch((e) => console.error('dispatcher', e));
         return send(res, 201, msg, { ETag: etag() });
@@ -811,6 +859,103 @@ async function handleApi(req, res, urlPath) {
       }
     }
 
+    if (resource === 'issues') {
+      if (!Array.isArray(state.issues)) state.issues = [];
+      if (method === 'POST' && !id) {                 // flag a field issue
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const pref = body.photo && body.photo.id && photos[body.photo.id] ? { id: body.photo.id, mime: photos[body.photo.id].mime } : null;
+        const iss = makeIssue(state.issues, { ...body, photo: pref, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.issues.push(iss);
+        bump(); await persistState();
+        logAudit(actor, 'issue.create', { targetId: iss.id, targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId, detail: iss.severity });
+        return send(res, 201, iss, { ETag: etag() });
+      }
+      if (method === 'POST' && id && sub === 'promote') {   // → formal punch item or RFI
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req).catch(() => ({}));
+        const to = body.to === 'rfi' ? 'rfi' : 'punch';
+        let created, item;
+        if (to === 'punch') {
+          if (!Array.isArray(state.punch)) state.punch = [];
+          item = makePunchItem(state.punch, { projectId: iss.projectId, taskId: iss.taskId, title: iss.title, priority: iss.severity === 'high' ? 'high' : 'normal', createdBy: actor.name, createdAt: new Date().toISOString() });
+          state.punch.push(item); created = { kind: 'punch', id: item.id, number: item.number };
+        } else {
+          if (!Array.isArray(state.docs)) state.docs = [];
+          item = makeDoc(state.docs, { kind: 'rfi', projectId: iss.projectId, taskId: iss.taskId, title: iss.title, createdBy: actor.name, createdAt: new Date().toISOString() });
+          state.docs.push(item); created = { kind: 'rfi', id: item.id, number: item.number };
+        }
+        iss.promotedTo = { kind: created.kind, id: created.id };
+        iss.status = 'resolved'; iss.resolvedBy = actor.name; iss.resolvedAt = new Date().toISOString(); iss.rev = (iss.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'issue.promote', { targetId: iss.id, targetName: `${iss.number} → ${created.number}`, projectId: iss.projectId, detail: created.kind });
+        return send(res, 200, { issue: iss, created, item }, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'severity', 'status'].forEach((k) => { if (body[k] !== undefined) iss[k] = body[k]; });
+        if (!ISSUE_SEVERITIES.includes(iss.severity)) iss.severity = 'normal';
+        if (!ISSUE_STATUSES.includes(iss.status)) iss.status = 'open';
+        if (iss.status === 'resolved' && !iss.resolvedAt) { iss.resolvedBy = actor.name; iss.resolvedAt = new Date().toISOString(); }
+        if (iss.status === 'open') { iss.resolvedBy = null; iss.resolvedAt = null; }
+        iss.rev = (iss.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'issue.update', { targetId: iss.id, targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId, detail: `status ${iss.status}` });
+        return send(res, 200, iss, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const iss = state.issues.find((x) => x.id === id);
+        if (!iss) return send(res, 404, { error: 'issue not found' });
+        if (!canEditProject(actor, iss.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.issues = state.issues.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'issue.delete', { targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'constraints') {
+      if (!Array.isArray(state.constraints)) state.constraints = [];
+      if (method === 'POST' && !id) {                 // log a constraint
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const cstr = makeConstraint(state.constraints, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.constraints.push(cstr);
+        bump(); await persistState();
+        logAudit(actor, 'constraint.create', { targetId: cstr.id, targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId, detail: cstr.type });
+        return send(res, 201, cstr, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const cstr = state.constraints.find((x) => x.id === id);
+        if (!cstr) return send(res, 404, { error: 'constraint not found' });
+        if (!canEditProject(actor, cstr.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'type', 'responsible', 'needBy', 'status', 'notes'].forEach((k) => { if (body[k] !== undefined) cstr[k] = body[k]; });
+        if (!CONSTRAINT_TYPES.includes(cstr.type)) cstr.type = 'other';
+        if (!CONSTRAINT_STATUSES.includes(cstr.status)) cstr.status = 'open';
+        if (cstr.status === 'cleared' && !cstr.clearedAt) { cstr.clearedBy = actor.name; cstr.clearedAt = new Date().toISOString(); }
+        if (cstr.status === 'open') { cstr.clearedBy = null; cstr.clearedAt = null; }
+        cstr.rev = (cstr.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'constraint.update', { targetId: cstr.id, targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId, detail: `status ${cstr.status}` });
+        return send(res, 200, cstr, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const cstr = state.constraints.find((x) => x.id === id);
+        if (!cstr) return send(res, 404, { error: 'constraint not found' });
+        if (!canEditProject(actor, cstr.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.constraints = state.constraints.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'constraint.delete', { targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
     if (resource === 'dispatcher' && method === 'POST' && id === 'scan') {
       const n = runDispatcherScan();
       return send(res, 200, { posted: n }, { ETag: etag() });
@@ -820,6 +965,19 @@ async function handleApi(req, res, urlPath) {
       if (method === 'GET' && id && sub === 'history') {
         // Full audit trail for one task (any authenticated user may view).
         return send(res, 200, audit.filter((e) => e.targetId === id).reverse());
+      }
+      if (method === 'POST' && id && sub === 'callsummary') {
+        // Post-call recap into the task thread (the Dispatcher authors it). The
+        // caller's client hits this when a task-linked call ends.
+        const t = (state.tasks || []).find((x) => x.id === id);
+        if (!t) return send(res, 404, { error: 'task not found' });
+        if (!canEditProject(actor, t.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req).catch(() => ({}));
+        const text = callSummary(state, { taskId: id, callerName: actor.name, peerName: body.peerName || '', durationSec: +body.durationSec || 0, video: !!body.video });
+        const channel = (state.channels || []).find((c) => c.id === channelIdForProject(t.projectId));
+        if (!channel) return send(res, 404, { error: 'no channel for project' });
+        const msg = postDispatcher(channel, text, 'reply', { kind: 'task', id });
+        return send(res, 201, msg, { ETag: etag() });
       }
       if (method === 'POST') {
         const body = await readBody(req);
@@ -905,6 +1063,7 @@ state = await loadState();
 users = await loadUsers();
 audit = await loadAudit();
 voice = await loadVoice();
+photos = await loadPhotos();
 server.listen(PORT, () => {
   console.log(`\n  BuildFlow ERP Schedule  →  http://localhost:${PORT}`);
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);

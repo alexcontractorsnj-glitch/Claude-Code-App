@@ -15,15 +15,21 @@ import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
 import { renderDeliveries } from './views/deliveries.js';
+import { renderConstraints } from './views/constraints.js';
+import { renderPhotos } from './views/photos.js';
 import { renderMessages } from './views/messages.js';
 import { renderTestimonials } from './views/testimonials.js';
 import { DOC_KINDS } from './docs.js';
 import { CO_STATUSES } from './changeorders.js';
 import { WEATHER } from './fieldreports.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
+import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from './constraints.js';
+import { callsSupported } from './webrtc.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
+import { startRecording, supportsRecording, fmtDur } from './voice.js';
+import { capturePhoto, supportsPhotos } from './media.js';
 
 const ctx = {
   view: 'gantt',
@@ -67,6 +73,8 @@ const VIEWS = {
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
   deliveries: { label: 'Deliveries', icon: '🚚', render: renderDeliveries },
+  constraints: { label: 'Make-Ready', icon: '🚧', render: renderConstraints },
+  photos: { label: 'Photos', icon: '📷', render: renderPhotos },
   messages: { label: 'Messages', icon: '💬', render: renderMessages },
   testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
 };
@@ -369,6 +377,174 @@ function historySection(taskId) {
   return el('div', { class: 'hist-section' }, [el('div', { class: 'hist-head' }, 'History'), btn, body]);
 }
 
+// --- Task Activity (per-task discussion: the task's slice of its channel) ----
+function taFmt(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+// "Call about this task" — pre-targets a teammate and tags the call with the
+// task, so a recap lands back in this Activity feed when the call ends.
+function taskCallBar(taskId) {
+  if (!callsSupported()) return null;
+  const t = store.task(taskId);
+  if (!store.canEditProject(t.projectId)) return null;
+  const bar = el('div', { class: 'ta-callbar' });
+  const render = () => {
+    clear(bar);
+    const online = store.peopleOnline();
+    bar.appendChild(el('span', { class: 'ta-callbar-label' }, '📞 Call about this task'));
+    if (!online.length) { bar.appendChild(el('span', { class: 'ta-callbar-none' }, 'No teammates online')); return; }
+    online.slice(0, 4).forEach((p) => bar.appendChild(el('span', { class: 'ta-callchip' }, [
+      el('span', { class: 'ta-callwho' }, p.name),
+      el('button', { class: 'icon-btn', title: `Audio call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, false).catch(() => store._notify('Mic unavailable.', 'warn')) }, '📞'),
+      el('button', { class: 'icon-btn', title: `Video call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, true).catch(() => store._notify('Camera unavailable.', 'warn')) }, '🎥'),
+    ])));
+  };
+  render();
+  const unsub = store.subscribe(() => { if (bar.isConnected) render(); else unsub(); });
+  return bar;
+}
+
+function taskActivitySection(taskId) {
+  const wrap = el('div', { class: 'task-activity' });
+  const count = el('span', { class: 'ta-count' });
+  wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '💬 Activity'), count]));
+  const cb = taskCallBar(taskId);
+  if (cb) wrap.appendChild(cb);
+  const feed = el('div', { class: 'ta-feed' });
+  wrap.appendChild(feed);
+
+  const renderFeed = () => {
+    clear(feed);
+    const msgs = store.messagesForTask(taskId);
+    count.textContent = msgs.length ? String(msgs.length) : '';
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty' }, 'No activity yet — comment or leave a voice note about this task.')); return; }
+    msgs.forEach((m) => {
+      const bot = m.authorId === 'dispatcher';
+      feed.appendChild(el('div', { class: 'ta-msg' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+        el('div', { class: 'ta-byline' }, [el('span', { class: 'ta-author' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time' }, taFmt(m.createdAt))]),
+        m.body ? el('div', { class: 'ta-body' }, m.body) : null,
+        m.voice ? el('audio', { class: 'ta-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+        m.photo ? el('img', { class: 'ta-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
+      ]));
+    });
+    feed.scrollTop = feed.scrollHeight;
+  };
+  renderFeed();
+  // Live updates while the modal is open (SSE/poll); self-unsubscribe when gone.
+  const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
+
+  if (store.canPostTask(taskId)) {
+    const input = el('input', { class: 'input', placeholder: 'Comment on this task…  (@name to mention)' });
+    const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); post(); } });
+    const controls = [input, el('button', { class: 'btn primary sm', onclick: post }, 'Post')];
+    if (supportsPhotos()) {
+      controls.push(el('button', { class: 'btn icon', title: 'Add photo', onclick: async () => { const pic = await capturePhoto(); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
+    }
+    if (supportsRecording()) {
+      let rec = null, iv = null;
+      const recBtn = el('button', { class: 'btn icon', title: 'Voice note' }, '🎤');
+      recBtn.onclick = async () => {
+        if (rec) {
+          clearInterval(iv); const r = rec; rec = null; recBtn.textContent = '🎤'; recBtn.classList.remove('on');
+          const clip = await r.stop(); if (clip && clip.b64) { store.postTaskVoice(taskId, clip); renderFeed(); }
+          return;
+        }
+        try { rec = await startRecording(); recBtn.classList.add('on'); let s = 0; recBtn.textContent = '⏹ 0:00'; iv = setInterval(() => { s += 1; recBtn.textContent = '⏹ ' + fmtDur(s); }, 1000); }
+        catch { store._notify('Microphone unavailable.', 'warn'); }
+      };
+      controls.push(recBtn);
+    }
+    wrap.appendChild(el('div', { class: 'ta-composer' }, controls));
+  } else {
+    wrap.appendChild(el('div', { class: 'ta-readonly' }, 'Read-only — you can’t post to this project’s tasks.'));
+  }
+  return wrap;
+}
+
+// --- Task issues (lightweight field flags, promotable to punch/RFI) ---------
+function taskIssuesSection(taskId) {
+  const t = store.task(taskId);
+  const wrap = el('div', { class: 'task-issues' });
+  wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '⚠️ Issues')]));
+  const list = el('div', { class: 'iss-list' });
+  wrap.appendChild(list);
+  const render = () => {
+    clear(list);
+    const issues = store.issuesForTask(taskId);
+    if (!issues.length) { list.appendChild(el('div', { class: 'ta-empty' }, 'No issues flagged on this task.')); return; }
+    issues.forEach((i) => {
+      const canEdit = store.canEditProject(i.projectId) && !i.promotedTo;
+      list.appendChild(el('div', { class: 'iss-row sev-' + i.severity + (i.status === 'resolved' ? ' resolved' : '') }, [
+        el('div', { class: 'iss-main' }, [
+          el('div', { class: 'iss-title' }, `${i.number}  ${i.title}`),
+          el('div', { class: 'iss-meta' }, `${i.severity}${i.status === 'resolved' ? ' · resolved' : ''}${i.promotedTo ? ' · → ' + i.promotedTo.kind.toUpperCase() : ''} · ${i.createdBy || ''}`),
+        ]),
+        canEdit ? el('div', { class: 'iss-actions' }, [
+          i.status === 'open' ? el('button', { class: 'btn sm ghost', onclick: () => { store.updateIssue(i.id, { status: 'resolved' }); render(); } }, 'Resolve') : null,
+          el('button', { class: 'btn sm', title: 'Promote to a punch item', onclick: async () => { await store.promoteIssue(i.id, 'punch'); render(); store._notify('Issue promoted to a punch item.', 'info'); } }, '→ Punch'),
+          el('button', { class: 'btn sm', title: 'Promote to an RFI', onclick: async () => { await store.promoteIssue(i.id, 'rfi'); render(); store._notify('Issue promoted to an RFI.', 'info'); } }, '→ RFI'),
+        ]) : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'input', placeholder: 'Flag an issue on this task…' });
+    const sev = el('select', { class: 'select' }, [['normal', 'Normal'], ['high', 'High'], ['low', 'Low']].map(([v, l]) => el('option', { value: v }, l)));
+    const flag = () => { const v = title.value.trim(); if (!v) return; store.createIssue({ projectId: t.projectId, taskId, title: v, severity: sev.value }); title.value = ''; render(); };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); flag(); } });
+    wrap.appendChild(el('div', { class: 'iss-composer' }, [title, sev, el('button', { class: 'btn primary sm', onclick: flag }, '⚠ Flag')]));
+  }
+  return wrap;
+}
+
+function taskConstraintsSection(taskId) {
+  const t = store.task(taskId);
+  const wrap = el('div', { class: 'task-constraints' });
+  const head = el('div', { class: 'ta-head' }, [el('span', {}, '🚧 Constraints')]);
+  const badge = el('span', { class: 'mr-badge' });
+  head.appendChild(badge);
+  wrap.appendChild(head);
+  const list = el('div', { class: 'cn-list' });
+  wrap.appendChild(list);
+  const render = () => {
+    clear(list);
+    const cs = store.constraintsForTask(taskId);
+    const open = cs.filter((c) => c.status === 'open').length;
+    badge.textContent = cs.length ? (open === 0 ? '✅ made ready' : `${open} open`) : '';
+    badge.className = 'mr-badge' + (cs.length && open === 0 ? ' ready' : open ? ' blocked' : '');
+    if (!cs.length) { list.appendChild(el('div', { class: 'ta-empty' }, 'No constraints — nothing blocking this task from being made ready.')); return; }
+    cs.forEach((c) => {
+      const canEdit = store.canEditProject(c.projectId);
+      const overdue = constraintOverdue(c);
+      list.appendChild(el('div', { class: 'cn-row type-' + c.type + (c.status === 'cleared' ? ' cleared' : '') + (overdue ? ' overdue' : '') }, [
+        el('div', { class: 'cn-main' }, [
+          el('div', { class: 'cn-title' }, `${c.number}  ${c.title}`),
+          el('div', { class: 'cn-meta' }, `${CONSTRAINT_TYPE_LABELS[c.type] || c.type}${c.responsible ? ' · ' + c.responsible : ''}${c.needBy ? ' · need-by ' + Dates.fmt(c.needBy) : ''}${c.status === 'cleared' ? ' · cleared' : overdue ? ' · OVERDUE' : ''}`),
+        ]),
+        (canEdit && c.status === 'open') ? el('div', { class: 'cn-actions' }, [
+          el('button', { class: 'btn sm', title: 'Mark this constraint cleared', onclick: () => { store.updateConstraint(c.id, { status: 'cleared' }); render(); } }, '✓ Clear'),
+        ]) : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'input', placeholder: 'Add a constraint blocking this task…' });
+    const type = el('select', { class: 'select' }, CONSTRAINT_TYPES.map((v) => el('option', { value: v }, CONSTRAINT_TYPE_LABELS[v])));
+    const who = el('input', { class: 'input', placeholder: 'Responsible party' });
+    const needBy = el('input', { class: 'input', type: 'date' });
+    const add = () => { const v = title.value.trim(); if (!v) return; store.createConstraint({ projectId: t.projectId, taskId, title: v, type: type.value, responsible: who.value.trim(), needBy: needBy.value || null }); title.value = ''; who.value = ''; needBy.value = ''; render(); };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    wrap.appendChild(el('div', { class: 'cn-composer' }, [title, el('div', { class: 'cn-composer-row' }, [type, who, needBy, el('button', { class: 'btn primary sm', onclick: add }, '+ Add')])]));
+  }
+  return wrap;
+}
+
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
   const isNew = taskId == null;
@@ -450,6 +626,9 @@ function openEditor(taskId) {
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
       !isNew ? metaPanel(t) : null,
+      !isNew ? taskConstraintsSection(taskId) : null,
+      !isNew ? taskIssuesSection(taskId) : null,
+      !isNew ? taskActivitySection(taskId) : null,
       (!isNew && store.mode === 'remote') ? historySection(taskId) : null,
     ]),
     el('div', { class: 'modal-foot' }, [

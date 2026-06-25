@@ -22,7 +22,7 @@ const { makeDoc, nextDocNumber, isOpen, overdueDocs } = await import('../src/js/
 const { makePunchItem, closeoutSummary, isOpenPunch, cleanAttachments } = await import('../src/js/punch.js');
 const { computeAlerts, alertSummary } = await import('../src/js/alerts.js');
 const { bucketTasks, workSummary, stepProgress, coerceStatus, outboxAdd, outboxRemove, outboxSummary, applyPendingTasks, dueLabel } = await import('../src/mobile/core.js');
-const { makeMessage, makeChannel, seedChannels, capChannel, setRead, lastRead, unreadCount, lastMessage, parseMentions, searchMessages, channelIdForProject, MSG_CAP } = await import('../src/js/messaging.js');
+const { makeMessage, makeChannel, seedChannels, capChannel, setRead, lastRead, unreadCount, lastMessage, parseMentions, searchMessages, channelIdForProject, MSG_CAP, messagesForTask, taskActivityCount } = await import('../src/js/messaging.js');
 
 section('seed + dates');
 const seed = seedState();
@@ -184,7 +184,7 @@ ok(makeMessage([], { channelId: ch1, body: 'hi' }).voice === null, 'non-voice me
 
 section('deliveries + dispatcher');
 const { makeDelivery, deliveryRisk, deliverySummary, deliveriesFor } = await import('../src/js/deliveries.js');
-const { analyzeField, fallbackBrief, mentionsDispatcher, DISPATCHER } = await import('../src/js/dispatcher.js');
+const { analyzeField, fallbackBrief, mentionsDispatcher, callSummary, fmtCallDur, DISPATCHER } = await import('../src/js/dispatcher.js');
 ok(seed.deliveries.length === 6 && seed.deliveries.every((d) => d.id && d.due), 'seed has 6 deliveries');
 ok(makeDelivery([], { projectId: 'p1', status: 'bogus' }).status === 'scheduled', 'delivery invalid status → default');
 ok(deliveryRisk({ status: 'scheduled', due: Dates.addDays(Dates.today(), -3) }).late === true, 'deliveryRisk late');
@@ -197,10 +197,65 @@ const findings = analyzeField(seed);
 ok(findings.some((f) => f.kind === 'delivery-late' && f.channelId === channelIdForProject('p1')), 'dispatcher flags late delivery → project channel');
 ok(findings.every((f) => f.key && f.channelId && f.severity), 'findings carry key/channel/severity');
 ok(findings.length === new Set(findings.map((f) => f.key)).size, 'finding keys are unique (dedupe-able)');
+ok(findings.some((f) => f.kind === 'constraint-overdue' && f.severity === 'high'), 'dispatcher flags overdue constraint');
 const brief = fallbackBrief(seed, 'p1');
 ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a digest');
+ok(/Constraints:/.test(brief) && /made ready/.test(brief), 'fallbackBrief includes constraint + % made ready line');
 ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
 ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
+ok(fmtCallDur(0) === '0:00' && fmtCallDur(75) === '1:15' && fmtCallDur(3661) === '1h 01:01', 'fmtCallDur formats m:ss / h m:ss');
+const recap = callSummary(seed, { taskId: 't4', callerName: 'A. Whitfield', peerName: 'D. Okafor', durationSec: 204, video: false });
+ok(/📞 Call recap/.test(recap) && /A\. Whitfield ↔ D\. Okafor/.test(recap) && /audio · 3:24/.test(recap), 'callSummary header: people, media, duration');
+ok(/Open follow-ups/.test(recap) && /🚧/.test(recap) && /⚠️/.test(recap), 'callSummary lists open constraints + issues on the task');
+const recap2 = callSummary(seed, { taskId: 't1', callerName: 'A', peerName: 'B', durationSec: 30, video: true });
+ok(/video/.test(recap2) && /nothing outstanding/.test(recap2), 'callSummary: clean task → nothing outstanding');
+
+section('task activity (linkedTo)');
+let tam = [];
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'general chatter' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'on the footing', linkedTo: { kind: 'task', id: 't4' }, createdAt: '2026-06-01T09:00:00Z' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'footing follow-up', linkedTo: { kind: 'task', id: 't4' }, createdAt: '2026-06-01T10:00:00Z' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'about steel', linkedTo: { kind: 'task', id: 't7' } }));
+ok(makeMessage([], { channelId: 'c', body: 'x' }).linkedTo === null, 'message linkedTo defaults null');
+ok(messagesForTask(tam, 't4').length === 2 && taskActivityCount(tam, 't4') === 2, 'messagesForTask filters by task');
+ok(messagesForTask(tam, 't4')[0].body === 'on the footing', 'task activity sorted oldest→newest');
+ok(taskActivityCount(tam, 't7') === 1 && taskActivityCount(tam, 'tZ') === 0, 'taskActivityCount per task');
+ok(!messagesForTask(tam, 't4').some((m) => m.body === 'general chatter'), 'general chatter excluded from task activity');
+
+section('field issues');
+const { makeIssue, issuesForTask, issueSummary, isOpenIssue } = await import('../src/js/issues.js');
+ok(seed.issues.length === 3 && seed.issues[0].number === 'I-001', 'seed has 3 numbered issues');
+ok(makeIssue([], { projectId: 'p1', severity: 'bogus' }).severity === 'normal', 'issue invalid severity → normal');
+const il = [makeIssue([], { projectId: 'p1', taskId: 't4', severity: 'high' })];
+il.push(makeIssue(il, { projectId: 'p1', taskId: 't4', status: 'resolved' }));
+il.push(makeIssue(il, { projectId: 'p1', taskId: 't7' }));
+ok(il[1].id === 'is2' && il[1].number === 'I-002', 'issue ids/numbers increment');
+ok(issuesForTask(il, 't4').length === 2, 'issuesForTask filters');
+const isum = issueSummary(il, 'p1');
+ok(isum.total === 3 && isum.open === 2 && isum.highOpen === 1, 'issueSummary counts');
+ok(isOpenIssue(il[0]) && !isOpenIssue(il[1]), 'isOpenIssue');
+
+section('last-planner constraints');
+const { makeConstraint, constraintsForTask, constraintSummary, madeReady, constraintOverdue, constraintDueSoon, isOpenConstraint } = await import('../src/js/constraints.js');
+ok(seed.constraints.length === 9 && seed.constraints[0].number === 'C-001', 'seed has 9 numbered constraints');
+ok(makeConstraint([], { projectId: 'p1', type: 'bogus' }).type === 'other', 'constraint invalid type → other');
+const cl = [
+  makeConstraint([], { projectId: 'p1', taskId: 't7', type: 'information', needBy: Dates.addDays(Dates.today(), -2) }), // open + overdue
+  null, null,
+];
+cl[1] = makeConstraint(cl.filter(Boolean), { projectId: 'p1', taskId: 't7', status: 'cleared' });
+cl[2] = makeConstraint(cl.filter(Boolean), { projectId: 'p1', taskId: 't8', status: 'cleared' });   // t8 fully cleared
+ok(cl[0].id === 'cn1' && cl[1].number === 'C-002', 'constraint ids/numbers increment');
+ok(constraintsForTask(cl, 't7').length === 2, 'constraintsForTask filters');
+ok(constraintOverdue(cl[0]) && !constraintOverdue(cl[1]), 'constraintOverdue (open + past need-by)');
+ok(constraintDueSoon(makeConstraint([], { projectId: 'p1', needBy: Dates.addDays(Dates.today(), 3) })), 'constraintDueSoon within lookahead');
+ok(!constraintDueSoon(cl[1]), 'cleared constraint is not due-soon');
+const csum = constraintSummary(cl, 'p1');
+ok(csum.total === 3 && csum.open === 1 && csum.cleared === 2 && csum.overdue === 1, 'constraintSummary counts');
+const mr = madeReady(cl, 'p1');
+ok(mr.tasks === 2 && mr.ready === 1 && mr.percent === 50, 'madeReady: t8 ready, t7 blocked → 50%');
+ok(madeReady([], 'p1').percent === null, 'madeReady null when no constraints');
+ok(isOpenConstraint(cl[0]) && !isOpenConstraint(cl[1]), 'isOpenConstraint');
 
 section('dictation language (EN/ES)');
 const voiceMod = await import('../src/js/voice.js');

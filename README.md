@@ -93,6 +93,41 @@ with **online presence** and **"typing…"** indicators riding the same stream.
 **ETag polling stays as the fallback** (and the static GitHub Pages demo, which
 has no server, runs chat in local mode on the seeded channels).
 
+**🧵 Task Activity (communication on the work item).** Every task has an
+**Activity** feed — comment or leave a **voice note** right on the task (desktop
+editor + the Corefield task sheet). Per the dominant industry model
+(Fieldwire/Linear/Asana/ClickUp — see `docs/task-communication-and-capture-plan.md`),
+a task thread is **not a separate channel**: it's a **filtered/synced view of the
+project channel** joined by the `linkedTo={kind,id}` hook — *one source of truth,
+two views*. Task-linked messages appear on the task **and** in the channel (with a
+clickable **↳ task chip**), so nothing fragments; work cards show a 💬 count.
+
+**📷 Field capture — photos & issue flags (on the task).** Crews document the work
+right where they do it. **Capture a photo** from the task (camera on the phone,
+file picker on desktop) — it's downscaled to JPEG client-side, stored by reference
+in `POST /api/photos` (kept out of `/api/state`, capped), and posted into the
+Activity feed as an inline thumbnail. They can also **flag an issue** on the task:
+a lightweight field observation with severity (low/normal/high) and an open →
+resolved status. Issues are **promotable** — one tap turns a flagged issue into a
+**punch item** or an **RFI** (auto-resolving the issue and stamping `promotedTo`),
+so a quick field note flows straight into the formal closeout/QA process without
+re-keying. Open high-severity issues feed the **AI dispatcher** so they surface
+alongside late deliveries and blocked tasks.
+
+**🚧 Make-Ready — Last-Planner constraints (on the task).** Before a task is
+released to the field it has to be *made ready* — every constraint blocking it
+removed. Each task carries a **constraint log**: a thing that must be in place
+first (material · information/RFI · labor · equipment · prerequisite work ·
+permit/approval · access · safety), owned by a **responsible party**, with a
+**need-by** date, tracked **open → cleared**. The **Make-Ready** view rolls the
+whole program up behind the headline **% Made Ready** KPI — the share of
+constrained tasks that have been fully de-constrained — with overdue constraints
+flagged in red. The **AI dispatcher** watches open constraints exactly like it
+watches deliveries: a constraint past its need-by becomes a high-severity alert
+in the project channel, and the dispatcher can **clear a constraint** once it's
+resolved (`clear_constraint` tool). One source of truth, planned upstream on the
+task and rolled up for the PM. (Phases A–C of the task-comms plan.)
+
 **📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
 online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
 peer-to-peer **WebRTC**, with offer/answer/ICE **signaled over the same SSE
@@ -104,6 +139,17 @@ with mute, camera toggle, and hang-up, on desktop and phone.
 > on the same network and most home/office NATs, but **very restrictive or
 > symmetric-NAT networks won't connect** — adding a TURN server is the production
 > fix. The signaling + UI are built so that's a config change, not a rewrite.
+
+**📞 Call about *this task* + auto recap.** Every task's Activity feed has a
+**Call about this task** bar: tap an online teammate to start an audio/video call
+**pre-tagged** with the task (`link={kind:'task',id}` rides the WebRTC offer, so
+both ends know what it's about). When the call ends, the initiator's client hits
+`POST /api/tasks/:id/callsummary` and the **Dispatcher posts a recap** straight
+into that task's thread — participants, audio/video, duration, and the task's
+still-**open follow-ups** (constraints + issues) so nothing said on the call gets
+lost. Calls are peer-to-peer with no transcript, so the recap is grounded in
+metadata + the live make-ready/issue state (and is enriched by Claude when a key
+is set), not invented. `callSummary()` is pure + tested.
 
 ## 🤖 AI Dispatcher
 
@@ -119,11 +165,14 @@ interact with it right where they already talk.
 - **Conversational + action-taking:** `@dispatcher` in any channel and it
   replies. With a Claude API key it runs a **tool-use agent** that can read
   status and take **real, audited actions** — reschedule a task, change a task
-  status, update a delivery, or open a punch item — attributed to the dispatcher
-  on behalf of the asker.
+  status, update a delivery, open a punch item, or **clear a make-ready
+  constraint** — attributed to the dispatcher on behalf of the asker.
 - **Deliveries** are a first-class entity (`src/js/deliveries.js`): item,
   supplier, due date, status, and the task they feed. Managed from the
   **🚚 Deliveries** view; the dispatcher's late/due-soon logic runs off them.
+- **Constraints** (`src/js/constraints.js`) are watched the same way: an open
+  Last-Planner constraint past its **need-by** date becomes a high-severity
+  alert, so the make-ready log and the dispatcher reinforce each other.
 
 **Wiring the key (optional but recommended):** copy `.env.example` to `.env` and
 set `ANTHROPIC_API_KEY` (the server auto-loads `.env`, which is gitignored).
@@ -153,6 +202,30 @@ module imports resolve.)
 
 The footer shows a live pill: **Synced to server** when the REST API is reachable,
 **Local cache** otherwise.
+
+## Deploy the live server (one click)
+
+The server-backed features — login, persistent messaging, the AI dispatcher,
+SSE real-time, calls + recaps — need `server.mjs` running somewhere. The fastest
+host is **Render** (free plan, no card): the repo ships a `render.yaml` blueprint,
+so it's one click + a Render sign-in.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/alexcontractorsnj-glitch/Claude-Code-App/tree/claude/corefield-mobile-app-e1pkel)
+
+1. Click the button → sign into Render → **Apply** (it reads `render.yaml` and
+   provisions a `node server.mjs` web service). You get a live `https://…onrender.com`
+   URL in ~1–2 minutes.
+2. *(Optional, recommended)* In the service's **Environment** tab set
+   `ANTHROPIC_API_KEY` to switch the dispatcher + call recaps from the rule-based
+   fallback to the live Claude agent. It's marked `sync: false`, so it never lives
+   in git.
+3. Open the URL on your phone and **Add to Home Screen** — Corefield is at
+   `…onrender.com/mobile/`.
+
+> The free plan's disk is **ephemeral**: `data/` (schedule, users, messages,
+> photos) resets on each deploy/restart — fine for a live pilot. Add a paid
+> **Persistent Disk** mounted at `./data` for durable storage. The instance also
+> sleeps after inactivity and wakes on the next request (first hit is slow).
 
 ## Tests
 
@@ -197,6 +270,10 @@ views changes.
 | `POST/PATCH/DELETE /api/changeorders/:id?` | change-order CRUD (approved → billing) |
 | `POST/PATCH/DELETE /api/reports/:id?` | daily field report CRUD |
 | `POST/PATCH/DELETE /api/punch/:id?` | punch-list item CRUD |
+| `POST /api/photos`, `GET /api/photos/:id` | field-photo blob store (by reference, capped, out of `/api/state`) |
+| `POST/PATCH/DELETE /api/issues/:id?`, `POST /api/issues/:id/promote` | field issue flags + promote to punch/RFI |
+| `POST/PATCH/DELETE /api/constraints/:id?` | Last-Planner make-ready constraints (open → cleared) |
+| `POST /api/tasks/:id/callsummary` | post a call recap (Dispatcher-authored) into the task thread |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -497,11 +574,19 @@ zero total float are flagged), not hard-coded.
 ## Roadmap (next sprints)
 
 - Email/webhook delivery for the alert center
-- Real file/photo upload (blob store) behind the existing attachment model
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
+- TURN relay so calls connect on restrictive/symmetric-NAT networks
 
-**Done recently:** ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
+**Done recently:** ✅ **Call about this task** — task-tagged 1:1 calls with an
+auto **recap** (participants, duration, open follow-ups) posted back into the
+task thread by the Dispatcher · ✅ **Make-Ready constraints** — Last-Planner constraint log on
+every task (open → cleared, responsible party + need-by), a **% Made Ready** KPI
+view, and the dispatcher watching overdue constraints · ✅ **Field capture on the
+task** — photos (camera/file → client-side JPEG → blob store) and **issue flags**
+that promote to punch/RFI ·
+✅ **Task Activity** (comments + voice notes on the work item, synced to the
+project channel) · ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
 channel, STUN) · ✅ **Real-time SSE** (instant delivery + presence + typing) ·
 ✅ **AI Dispatcher** (Claude tool-use agent + deliveries, proactive alerts) ·
 ✅ **Voice notes + dictation** · ✅ **Team messaging** — per-project channels with a web

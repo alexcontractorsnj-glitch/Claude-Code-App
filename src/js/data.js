@@ -20,9 +20,11 @@ import { makeReport } from './fieldreports.js';
 import { makePunchItem } from './punch.js';
 import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
-  messagesForChannel, lastMessage, channelIdForProject,
+  messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from './messaging.js';
 import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
+import { makeIssue, issuesForTask, issueSummary } from './issues.js';
+import { makeConstraint, constraintsForTask, constraintsForProject, constraintSummary, madeReady } from './constraints.js';
 import { CallManager } from './webrtc.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
@@ -88,6 +90,7 @@ class Store {
     this._es = null;              // EventSource (live stream)
     this.callListeners = new Set();
     this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
+    this.calls.onEnded = (info) => this._postCallSummary(info);
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
   }
@@ -256,8 +259,19 @@ class Store {
   // ---- calls (1:1 audio/video) ----
   _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
   onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
-  callPeer(peer, video) { return this.calls.call(peer, video); }
+  callPeer(peer, video, link) { return this.calls.call(peer, video, link); }
+  // Call a teammate ABOUT a task — pre-tagged so a recap lands in the task thread.
+  callAboutTask(peer, taskId, video) { return this.callPeer(peer, video, { kind: 'task', id: taskId }); }
   peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
+
+  // When a task-linked call ends, the initiator posts an AI/deterministic recap
+  // into the task's Activity feed (attributed to the Dispatcher, server-side).
+  _postCallSummary({ link, peer, durationSec, video }) {
+    if (!link || link.kind !== 'task' || this.mode !== 'remote') return;
+    api('POST', '/tasks/' + link.id + '/callsummary', { peerName: peer && peer.name, durationSec, video })
+      .then(() => { this._pull(); })
+      .catch(() => {});
+  }
 
   _pull() {
     if (this._pulling || this.mode !== 'remote') return;
@@ -684,6 +698,32 @@ class Store {
     return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
   }
 
+  // ---- task Activity (a task's slice of its project channel, via linkedTo) ----
+  messagesForTask(taskId) { return messagesForTask(this.messages, taskId); }
+  taskActivityCount(taskId) { return messagesForTask(this.messages, taskId).length; }
+  canPostTask(taskId) { const t = this.task(taskId); return !!t && this.canEditProject(t.projectId); }
+  postTaskMessage(taskId, body) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendMessage(ch.id, body, { linkedTo: { kind: 'task', id: taskId } });
+  }
+  postTaskVoice(taskId, clip) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
+  }
+  postTaskPhoto(taskId, pic) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
+  }
+  // All photos in scope (for the project Photos gallery).
+  photosFor(projectId) {
+    return (this.messages || [])
+      .filter((m) => m.photo && (projectId === 'all' || (this.channel(m.channelId) || {}).projectId === projectId))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+
   async sendMessage(channelId, body, extra = {}) {
     const ch = this.channel(channelId);
     if (!ch) return null;
@@ -718,7 +758,7 @@ class Store {
   // Send a voice note. `clip` = { mime, b64, dur }. Remote uploads the audio to
   // /api/voice (kept out of /api/state) then posts a message referencing it;
   // local/demo embeds the audio as a data-URL on the message.
-  async sendVoice(channelId, clip) {
+  async sendVoice(channelId, clip, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !clip || !clip.b64) return null;
     if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
@@ -726,7 +766,7 @@ class Store {
       this._setSyncing(true);
       try {
         const up = await api('POST', '/voice', { mime: clip.mime, data: clip.b64, dur: clip.dur });
-        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id } });
+        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id }, linkedTo: linkedTo || null });
         this.rev = revOf(etag) ?? this.rev;
         this.state.messages.push(data);
         this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
@@ -736,8 +776,42 @@ class Store {
       finally { this._setSyncing(false); }
     }
     const msg = makeMessage(this.state.messages, {
-      channelId, authorId: this._uid(), authorName: this.user,
+      channelId, authorId: this._uid(), authorName: this.user, linkedTo: linkedTo || null,
       voice: { url: `data:${clip.mime};base64,${clip.b64}`, dur: clip.dur, mime: clip.mime },
+    });
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
+  photoSrc(msg) {
+    if (!msg || !msg.photo) return null;
+    return msg.photo.url || ('/api/photos/' + msg.photo.id);
+  }
+  // Send a photo. `pic` = { mime, b64, w, h }. Remote uploads to /api/photos
+  // (out of /api/state) then posts a message referencing it; demo embeds a data-URL.
+  async sendPhoto(channelId, pic, linkedTo) {
+    const ch = this.channel(channelId);
+    if (!ch || !pic || !pic.b64) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const up = await api('POST', '/photos', { mime: pic.mime, data: pic.b64, w: pic.w, h: pic.h });
+        const { data, etag } = await api('POST', '/messages', { channelId, photo: { id: up.data.id }, linkedTo: linkedTo || null });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, {
+      channelId, authorId: this._uid(), authorName: this.user, linkedTo: linkedTo || null,
+      photo: { url: `data:${pic.mime};base64,${pic.b64}`, w: pic.w, h: pic.h },
     });
     this.state.messages.push(msg);
     this.state.messages = capChannel(this.state.messages, channelId);
@@ -797,6 +871,91 @@ class Store {
   }
   // Trigger a proactive dispatcher scan (admin/PM); returns #posted.
   scanDispatcher() { return api('POST', '/dispatcher/scan').then((r) => (r.data && r.data.posted) || 0).catch(() => 0); }
+
+  // ---- field issues (lightweight, promotable to punch/RFI) ----
+  get issues() { return this.state.issues || []; }
+  issuesForTask(taskId) { return issuesForTask(this.issues, taskId); }
+  issueSummary(projectId) { return issueSummary(this.issues, projectId); }
+
+  async createIssue(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.issues)) this.state.issues = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/issues', partial); this.rev = revOf(etag) ?? this.rev; this.state.issues.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const iss = makeIssue(this.state.issues, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.issues.push(iss); this._emit(); return iss;
+  }
+  updateIssue(id, patch) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this._guardProject(iss.projectId)) return;
+    Object.assign(iss, patch);
+    this._emit();
+    if (this.mode === 'remote') api('PATCH', '/issues/' + id, patch).then(({ data, etag }) => { if (data) Object.assign(iss, data); this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+  async promoteIssue(id, to) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this._guardProject(iss.projectId)) return null;
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/issues/' + id + '/promote', { to });
+        this.rev = revOf(etag) ?? this.rev;
+        if (data && data.issue) Object.assign(iss, data.issue);
+        if (data && data.item && data.created) {                    // splice the new punch/RFI in directly
+          const arr = data.created.kind === 'punch' ? (this.state.punch = this.state.punch || []) : (this.state.docs = this.state.docs || []);
+          if (!arr.some((x) => x.id === data.item.id)) arr.push(data.item);
+        }
+        this._emit();
+        return data;
+      }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    iss.promotedTo = { kind: to, id: 'local' }; iss.status = 'resolved'; this._emit();
+    return { issue: iss, created: { kind: to } };
+  }
+  deleteIssue(id) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (iss && !this._guardProject(iss.projectId)) return;
+    this.state.issues = this.issues.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') api('DELETE', '/issues/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+
+  // ---- Last-Planner constraints (make-ready log + % Made Ready) ----
+  get constraints() { return this.state.constraints || []; }
+  constraintsForTask(taskId) { return constraintsForTask(this.constraints, taskId); }
+  constraintsForProject(projectId) { return constraintsForProject(this.constraints, projectId); }
+  constraintSummary(projectId) { return constraintSummary(this.constraints, projectId); }
+  madeReady(projectId) { return madeReady(this.constraints, projectId); }
+
+  async createConstraint(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/constraints', partial); this.rev = revOf(etag) ?? this.rev; this.state.constraints.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const c = makeConstraint(this.state.constraints, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.constraints.push(c); this._emit(); return c;
+  }
+  updateConstraint(id, patch) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (!c || !this._guardProject(c.projectId)) return;
+    Object.assign(c, patch);
+    this._emit();
+    if (this.mode === 'remote') api('PATCH', '/constraints/' + id, patch).then(({ data, etag }) => { if (data) Object.assign(c, data); this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+  deleteConstraint(id) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (c && !this._guardProject(c.projectId)) return;
+    this.state.constraints = this.constraints.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') api('DELETE', '/constraints/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
 
   deleteTask(id) {
     const target = this.task(id);

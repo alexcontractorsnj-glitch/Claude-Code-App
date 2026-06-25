@@ -22,6 +22,7 @@ export class CallManager {
   constructor(signal, onChange) {
     this.signal = signal;          // (toUsername, msg) => void
     this.onChange = onChange;      // (snapshot) => void
+    this.onEnded = null;           // (info) => void — fired once when a CONNECTED call ends
     this.reset();
   }
 
@@ -34,12 +35,16 @@ export class CallManager {
     this.video = false;
     this.muted = false;
     this.cameraOff = false;
+    this.link = null;              // { kind:'task', id } — what the call is about
+    this.initiator = false;        // did WE place the call? (only initiator posts a recap)
+    this.startedAt = null;         // ms when the call connected
+    this._summarized = false;      // guard so a recap fires at most once
     this._offer = null;
     this._pendingIce = [];
   }
 
   snapshot() {
-    return { state: this.state, peer: this.peer, local: this.local, remote: this.remote, video: this.video, muted: this.muted, cameraOff: this.cameraOff };
+    return { state: this.state, peer: this.peer, local: this.local, remote: this.remote, video: this.video, muted: this.muted, cameraOff: this.cameraOff, link: this.link };
   }
   _emit() { if (this.onChange) this.onChange(this.snapshot()); }
 
@@ -58,16 +63,16 @@ export class CallManager {
     return pc;
   }
 
-  // Place an outgoing call.
-  async call(peer, video) {
+  // Place an outgoing call. `link` (e.g. {kind:'task',id}) tags what it's about.
+  async call(peer, video, link) {
     if (this.state !== 'idle') return;
-    this.peer = peer; this.video = !!video; this.state = 'calling'; this._emit();
+    this.peer = peer; this.video = !!video; this.link = link || null; this.initiator = true; this.state = 'calling'; this._emit();
     try {
       await this._media(video);
       this.pc = this._peerConn(peer.username);
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
-      this.signal(peer.username, { type: 'offer', sdp: offer.sdp, video: !!video });
+      this.signal(peer.username, { type: 'offer', sdp: offer.sdp, video: !!video, link: this.link });
       this._emit();
     } catch (e) { this._cleanup(); this.reset(); this._emit(); throw e; }
   }
@@ -78,10 +83,10 @@ export class CallManager {
       if (msg.type === 'offer') {
         if (this.state !== 'idle') { this.signal(msg.from, { type: 'decline' }); return; }   // busy
         this.peer = { username: msg.from, name: msg.fromName };
-        this.video = !!msg.video; this._offer = msg.sdp; this.state = 'ringing'; this._emit();
+        this.video = !!msg.video; this.link = msg.link || null; this._offer = msg.sdp; this.state = 'ringing'; this._emit();
       } else if (msg.type === 'answer') {
         if (this.pc) { await this.pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }); await this._flushIce(); }
-        this.state = 'connected'; this._emit();
+        this.startedAt = Date.now(); this.state = 'connected'; this._emit();
       } else if (msg.type === 'ice') {
         if (this.pc && this.pc.remoteDescription && this.pc.remoteDescription.type) await this.pc.addIceCandidate(msg.candidate).catch(() => {});
         else this._pendingIce.push(msg.candidate);
@@ -105,7 +110,7 @@ export class CallManager {
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       this.signal(this.peer.username, { type: 'answer', sdp: answer.sdp });
-      this.state = 'connected'; this._emit();
+      this.startedAt = Date.now(); this.state = 'connected'; this._emit();
     } catch (e) { this.decline(); throw e; }
   }
 
@@ -115,7 +120,15 @@ export class CallManager {
   toggleMute() { this.muted = !this.muted; if (this.local) this.local.getAudioTracks().forEach((t) => { t.enabled = !this.muted; }); this._emit(); }
   toggleCamera() { this.cameraOff = !this.cameraOff; if (this.local) this.local.getVideoTracks().forEach((t) => { t.enabled = !this.cameraOff; }); this._emit(); }
 
-  _end() { this.state = 'ended'; this._emit(); this._cleanup(); setTimeout(() => { this.reset(); this._emit(); }, 800); }
+  _end() {
+    // Fire a one-time recap for the side that placed a task-linked call.
+    if (!this._summarized && this.initiator && this.link && this.startedAt && this.onEnded) {
+      this._summarized = true;
+      const durationSec = Math.max(1, Math.round((Date.now() - this.startedAt) / 1000));
+      try { this.onEnded({ link: this.link, peer: this.peer, video: this.video, durationSec }); } catch { /* ignore */ }
+    }
+    this.state = 'ended'; this._emit(); this._cleanup(); setTimeout(() => { this.reset(); this._emit(); }, 800);
+  }
   _cleanup() {
     try { if (this.pc) this.pc.close(); } catch { /* ignore */ }
     this.pc = null;

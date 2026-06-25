@@ -11,8 +11,10 @@ import { makePunchItem } from '../src/js/punch.js';
 import { makeReport } from '../src/js/fieldreports.js';
 import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
-  messagesForChannel, lastMessage, channelIdForProject,
+  messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from '../src/js/messaging.js';
+import { makeIssue, issuesForTask } from '../src/js/issues.js';
+import { makeConstraint, constraintsForTask, constraintSummary, madeReady } from '../src/js/constraints.js';
 import { CallManager } from '../src/js/webrtc.js';
 import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
@@ -94,6 +96,7 @@ class MobileStore {
     this._es = null;                   // EventSource (live stream)
     this.callListeners = new Set();
     this.calls = new CallManager((to, msg) => this._sendSignal(to, msg), (snap) => this.callListeners.forEach((fn) => fn(snap)));
+    this.calls.onEnded = (info) => this._postCallSummary(info);
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this._setOnline(true));
@@ -273,6 +276,12 @@ class MobileStore {
   _sendSignal(to, msg) { api('POST', '/signal', { to, ...msg }).catch(() => {}); }
   onCall(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
   callPeer(peer, video) { return this.calls.call(peer, video); }
+  callAboutTask(peer, taskId, video) { return this.calls.call(peer, video, { kind: 'task', id: taskId }); }
+  _postCallSummary({ link, peer, durationSec, video }) {
+    if (!link || link.kind !== 'task' || this.local) return;
+    api('POST', '/tasks/' + link.id + '/callsummary', { peerName: peer && peer.name, durationSec, video })
+      .then(() => this._refresh()).catch(() => {});
+  }
   peopleOnline() { return this.onlineUsers.filter((u) => u.username && u.username !== this.username); }
   onlineCount() { return this.onlineUsers.length; }
   _pull() {
@@ -353,12 +362,27 @@ class MobileStore {
     return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
   }
 
-  sendMessage(channelId, body) {
+  sendMessage(channelId, body, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !String(body || '').trim()) return;
     if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
-    this._queueWrite({ kind: 'message.send', channelId, method: 'POST', path: '/messages', body: { channelId, body: String(body).trim() } });
+    this._queueWrite({ kind: 'message.send', channelId, method: 'POST', path: '/messages', body: { channelId, body: String(body).trim(), linkedTo: linkedTo || null } });
     this.markRead(channelId);
+  }
+
+  // ---- task Activity (a task's slice of its project channel) ----
+  messagesForTask(taskId) { return messagesForTask(this.messages, taskId); }
+  taskActivityCount(taskId) { return messagesForTask(this.messages, taskId).length; }
+  canPostTask(taskId) { const t = this.task(taskId); return !!t && this.canEditProject(t.projectId); }
+  postTaskMessage(taskId, body) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendMessage(ch.id, body, { kind: 'task', id: taskId });
+  }
+  postTaskVoice(taskId, clip) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
   }
 
   voiceSrc(msg) {
@@ -368,12 +392,53 @@ class MobileStore {
 
   // Send a voice note (queued through the outbox so it survives no signal).
   // clip = { mime, b64, dur }.
-  sendVoice(channelId, clip) {
+  sendVoice(channelId, clip, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !clip || !clip.b64) return;
     if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
-    this._queueWrite({ kind: 'voice.send', channelId, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
+    this._queueWrite({ kind: 'voice.send', channelId, linkedTo: linkedTo || null, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
     this.markRead(channelId);
+  }
+  photoSrc(msg) { if (!msg || !msg.photo) return null; return msg.photo.url || ('/api/photos/' + msg.photo.id); }
+  sendPhoto(channelId, pic, linkedTo) {
+    const ch = this.channel(channelId);
+    if (!ch || !pic || !pic.b64) return;
+    if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
+    this._queueWrite({ kind: 'photo.send', channelId, linkedTo: linkedTo || null, method: 'POST', path: '/messages', body: { channelId, mime: pic.mime, b64: pic.b64, w: pic.w, h: pic.h } });
+    this.markRead(channelId);
+  }
+  postTaskPhoto(taskId, pic) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
+  }
+
+  // ---- field issues ----
+  get issues() { return this.state.issues || []; }
+  issuesForTask(taskId) { return issuesForTask(this.issues, taskId); }
+  createIssue(partial) {
+    if (!this.canEditProject(partial.projectId)) { this.notify('You don’t have access to that project.', 'warn'); return; }
+    this._queueWrite({ kind: 'issue.create', method: 'POST', path: '/issues', body: partial });
+  }
+  resolveIssue(id) {
+    const iss = this.issues.find((x) => x.id === id);
+    if (!iss || !this.canEditProject(iss.projectId)) return;
+    this._queueWrite({ kind: 'issue.patch', targetId: id, method: 'PATCH', path: '/issues/' + id, body: { status: 'resolved' } });
+  }
+
+  // ---- Last-Planner constraints (make-ready) ----
+  get constraints() { return this.state.constraints || []; }
+  constraintsForTask(taskId) { return constraintsForTask(this.constraints, taskId); }
+  constraintSummary(projectId) { return constraintSummary(this.constraints, projectId); }
+  madeReady(projectId) { return madeReady(this.constraints, projectId); }
+  createConstraint(partial) {
+    if (!this.canEditProject(partial.projectId)) { this.notify('You don’t have access to that project.', 'warn'); return; }
+    this._queueWrite({ kind: 'constraint.create', method: 'POST', path: '/constraints', body: partial });
+  }
+  clearConstraint(id) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (!c || !this.canEditProject(c.projectId)) return;
+    this._queueWrite({ kind: 'constraint.patch', targetId: id, method: 'PATCH', path: '/constraints/' + id, body: { status: 'cleared' } });
   }
 
   markRead(channelId) {
@@ -445,13 +510,29 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push(makeReport(this.state.reports, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'issue.create') {
+      if (!Array.isArray(this.state.issues)) this.state.issues = [];
+      this.state.issues.push(makeIssue(this.state.issues, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, op.body, { resolvedBy: this.user, resolvedAt: new Date().toISOString() });
+    } else if (op.kind === 'constraint.create') {
+      if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+      this.state.constraints.push(makeConstraint(this.state.constraints, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
+      if (x) Object.assign(x, op.body, { clearedBy: this.user, clearedAt: new Date().toISOString() });
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
+      this.state.messages = capChannel(this.state.messages, op.channelId);
+    } else if (op.kind === 'photo.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h } }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
@@ -472,12 +553,27 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push({ id: op.qid, attachments: [], _provisional: true, ...op.body });
+    } else if (op.kind === 'issue.create') {
+      if (!Array.isArray(this.state.issues)) this.state.issues = [];
+      this.state.issues.push({ id: op.qid, number: '…', status: 'open', severity: 'normal', _provisional: true, ...op.body });
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, op.body);
+    } else if (op.kind === 'constraint.create') {
+      if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+      this.state.constraints.push({ id: op.qid, number: '…', status: 'open', type: 'other', _provisional: true, ...op.body });
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
+      if (x) Object.assign(x, op.body);
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], linkedTo: op.body.linkedTo || null, createdAt: new Date().toISOString(), _provisional: true });
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
+    } else if (op.kind === 'photo.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h }, createdAt: new Date().toISOString(), _provisional: true });
     }
   }
 
@@ -493,10 +589,14 @@ class MobileStore {
         const op = this.outbox[0];
         try {
           let data, etag;
-          if (op.kind === 'voice.send') {
-            // Two-step: upload the audio blob, then post the message referencing it.
-            const up = await api('POST', '/voice', { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
-            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, voice: { id: up.data.id } }));
+          if (op.kind === 'voice.send' || op.kind === 'photo.send') {
+            // Two-step: upload the media blob, then post the message referencing it.
+            const isPhoto = op.kind === 'photo.send';
+            const up = await api('POST', isPhoto ? '/photos' : '/voice', isPhoto
+              ? { mime: op.body.mime, data: op.body.b64, w: op.body.w, h: op.body.h }
+              : { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
+            const ref = isPhoto ? { photo: { id: up.data.id } } : { voice: { id: up.data.id } };
+            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, ...ref, linkedTo: op.linkedTo || null }));
           } else {
             const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
             ({ data, etag } = await api(op.method, op.path, op.body, headers));
@@ -538,7 +638,19 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
-    } else if (op.kind === 'message.send' || op.kind === 'voice.send') {
+    } else if (op.kind === 'issue.create') {
+      const i = (this.state.issues || []).findIndex((x) => x.id === op.qid);
+      if (i >= 0) this.state.issues[i] = data; else this.state.issues.push(data);
+    } else if (op.kind === 'issue.patch') {
+      const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, data);
+    } else if (op.kind === 'constraint.create') {
+      const i = (this.state.constraints || []).findIndex((x) => x.id === op.qid);
+      if (i >= 0) this.state.constraints[i] = data; else this.state.constraints.push(data);
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
+      if (x) Object.assign(x, data);
+    } else if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') {
       const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);
     }

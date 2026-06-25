@@ -100,6 +100,26 @@ try {
   await login('admin', 'admin123');
   ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'message.send'), 'message.send audited');
 
+  // --- photos on a task ---
+  const pdata = Buffer.from('fake-image-bytes').toString('base64');
+  const pup = await http('POST', '/api/photos', { mime: 'image/jpeg', data: pdata, w: 1280, h: 960 });
+  ok(pup.status === 201 && pup.data.id && pup.data.w === 1280, 'photo upload → id + dims');
+  const pmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', photo: { id: pup.data.id }, linkedTo: { kind: 'task', id: 't4' } });
+  ok(pmsg.status === 201 && pmsg.data.photo && pmsg.data.photo.id === pup.data.id && pmsg.data.linkedTo.id === 't4', 'photo message linked to task');
+  ok(JSON.stringify(await http('GET', '/api/state')).indexOf(pdata) === -1, 'image bytes NOT in /api/state');
+  const pfetch = await fetch(BASE + '/api/photos/' + pup.data.id, { headers: { Cookie: cookie } });
+  ok(pfetch.status === 200 && pfetch.headers.get('content-type') === 'image/jpeg', 'photo GET streams image');
+  ok((await http('POST', '/api/photos', { mime: 'image/jpeg', data: 'A'.repeat(1_900_000) })).status === 413, 'oversize photo → 413');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/photos', { mime: 'image/jpeg', data: pdata })).status === 403, 'viewer cannot upload photo → 403');
+  await login('admin', 'admin123');
+
+  // task Activity — a message linked to a task (the task's slice of the channel)
+  const tmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', body: 'Footing rebar looks good', linkedTo: { kind: 'task', id: 't4' } });
+  ok(tmsg.status === 201 && tmsg.data.linkedTo && tmsg.data.linkedTo.id === 't4', 'message carries linkedTo task');
+  const stTask = (await http('GET', '/api/state')).data;
+  ok(stTask.messages.filter((m) => m.linkedTo && m.linkedTo.kind === 'task' && m.linkedTo.id === 't4').length >= 1, 'linked message persisted in shared store (one source, two views)');
+
   // --- voice notes ---
   const b64 = Buffer.from('fake-audio-bytes').toString('base64');
   const up = await http('POST', '/api/voice', { mime: 'audio/webm', data: b64, dur: 5 });
@@ -138,6 +158,42 @@ try {
   await new Promise((r) => setTimeout(r, 500));
   const after = (await http('GET', '/api/state')).data.messages.filter((m) => m.authorId === 'dispatcher').length;
   ok(after > before, '@dispatcher mention triggers a reply');
+
+  // --- field issues (flag → promote to punch/RFI) ---
+  const iss = await http('POST', '/api/issues', { projectId: 'p1', taskId: 't4', title: 'Crack at grid C', severity: 'high' });
+  ok(iss.status === 201 && iss.data.number && iss.data.status === 'open', 'create field issue');
+  const promo = await http('POST', '/api/issues/' + iss.data.id + '/promote', { to: 'punch' });
+  ok(promo.status === 200 && promo.data.created.kind === 'punch' && promo.data.issue.status === 'resolved' && promo.data.issue.promotedTo, 'promote issue → punch + auto-resolve');
+  ok((await http('GET', '/api/state')).data.punch.some((p) => p.id === promo.data.created.id && p.taskId === 't4'), 'promoted punch item exists, linked to the task');
+  const iss2 = await http('POST', '/api/issues', { projectId: 'p1', title: 'minor scuff' });
+  ok((await http('PATCH', '/api/issues/' + iss2.data.id, { status: 'resolved' })).data.status === 'resolved', 'resolve issue');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'issue.promote'), 'issue.promote audited');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/issues', { projectId: 'p1', title: 'x' })).status === 403, 'viewer cannot flag an issue → 403');
+  await login('awhitfield', 'build123');
+  ok((await http('POST', '/api/issues', { projectId: 'p2', title: 'x' })).status === 403, 'scoped PM flags other project → 403');
+  await login('admin', 'admin123');
+
+  // --- Last-Planner constraints (make-ready log) ---
+  const cstr = await http('POST', '/api/constraints', { projectId: 'p1', taskId: 't9', title: 'Anchor bolt template approved', type: 'information', responsible: 'EOR', needBy: '2026-07-01' });
+  ok(cstr.status === 201 && cstr.data.number && cstr.data.status === 'open' && cstr.data.type === 'information', 'create constraint');
+  ok((await http('POST', '/api/constraints', { projectId: 'p1', title: 'bad', type: 'nope' })).data.type === 'other', 'invalid constraint type → other');
+  const cleared = await http('PATCH', '/api/constraints/' + cstr.data.id, { status: 'cleared' });
+  ok(cleared.status === 200 && cleared.data.status === 'cleared' && cleared.data.clearedBy, 'clear constraint stamps clearedBy');
+  ok((await http('GET', '/api/state')).data.constraints.some((c) => c.id === cstr.data.id && c.status === 'cleared'), 'cleared constraint persisted in state');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'constraint.update'), 'constraint.update audited');
+  ok((await http('DELETE', '/api/constraints/' + cstr.data.id)).status === 204, 'delete constraint');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/constraints', { projectId: 'p1', title: 'x' })).status === 403, 'viewer cannot log a constraint → 403');
+  await login('admin', 'admin123');
+
+  // --- task-linked call recap (posts a dispatcher message into the task thread) ---
+  const recap = await http('POST', '/api/tasks/t4/callsummary', { peerName: 'D. Okafor', durationSec: 204, video: false });
+  ok(recap.status === 201 && recap.data.authorId === 'dispatcher' && recap.data.linkedTo && recap.data.linkedTo.id === 't4', 'call recap posted, linked to the task');
+  ok(/📞 Call recap/.test(recap.data.body) && /3:24/.test(recap.data.body), 'recap body has header + duration');
+  const tact = await http('GET', '/api/state');
+  ok(tact.data.messages.some((m) => m.id === recap.data.id && m.linkedTo && m.linkedTo.id === 't4'), 'recap appears in the task activity (linkedTo)');
+  ok((await http('POST', '/api/tasks/nope/callsummary', { durationSec: 5 })).status === 404, 'call recap for missing task → 404');
 
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');

@@ -39,6 +39,7 @@ export function makeMessage(existing, partial) {
     body: String(partial.body == null ? '' : partial.body).slice(0, MAX_BODY),
     attachments: Array.isArray(partial.attachments) ? partial.attachments : [],
     voice: partial.voice || null,                   // { id, dur, mime } (audio served from /api/voice/:id) or { url, dur, mime } (demo data-URL)
+    photo: partial.photo || null,                   // { id, mime, w, h } (served from /api/photos/:id) or { url, w, h } (demo data-URL)
     linkedTo: partial.linkedTo || null,             // { kind:'task'|'rfi'|'punch', id }
     createdAt: partial.createdAt || new Date().toISOString(),
     editedAt: null,
@@ -86,6 +87,17 @@ export function unreadCount(messages, channelId, lastReadAt, selfId) {
 export function lastMessage(messages, channelId) {
   const inCh = messagesForChannel(messages, channelId);
   return inCh.length ? inCh[inCh.length - 1] : null;
+}
+
+// A task's Activity feed: messages linked to that task (the filtered/synced
+// view of the project channel — the same store, a different lens), oldest→newest.
+export function messagesForTask(messages, taskId) {
+  return (messages || [])
+    .filter((m) => !m.deleted && m.linkedTo && m.linkedTo.kind === 'task' && m.linkedTo.id === taskId)
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+}
+export function taskActivityCount(messages, taskId) {
+  return messagesForTask(messages, taskId).length;
 }
 
 // Parse @mentions out of a body → array of mentioned usernames (deduped).

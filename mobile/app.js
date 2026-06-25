@@ -15,6 +15,8 @@ import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../src/js/voice.js';
 import { callsSupported } from '../src/js/webrtc.js';
+import { capturePhoto, supportsPhotos } from '../src/js/media.js';
+import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from '../src/js/constraints.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -175,6 +177,7 @@ function taskCard(t) {
       el('div', { class: 'cf-card-foot' }, [
         el('span', { class: 'cf-status', style: { color: si.color, borderColor: si.color } }, si.label),
         el('span', { class: 'cf-due ' + due.tone }, due.text),
+        store.taskActivityCount(t.id) ? el('span', { class: 'cf-card-activity' }, '💬 ' + store.taskActivityCount(t.id)) : null,
         t.pending ? el('span', { class: 'cf-pendtag' }, '⟳ queued') : null,
       ]),
     ]),
@@ -197,11 +200,7 @@ function openTaskSheet(id) {
       t.lastEditedBy ? metaRow('Last edit', t.lastEditedBy) : null,
     ]));
 
-    if (!editable) {
-      body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
-      return;
-    }
-
+    if (editable) {
     // progress stepper
     const pctEl = el('div', { class: 'step-pct' }, (t.progress || 0) + '%');
     const apply = (val) => { store.updateTaskProgress(t.id, val); pctEl.textContent = val + '%'; };
@@ -231,7 +230,137 @@ function openTaskSheet(id) {
     };
     rebuild();
     body.appendChild(chips);
+    } else {
+      body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
+    }
+    renderTaskConstraints(body, id);
+    renderTaskIssues(body, id);
+    renderTaskActivity(body, id);
   });
+}
+
+// Last-Planner make-ready constraints on a task (add + clear).
+function renderTaskConstraints(body, taskId) {
+  const t = store.task(taskId);
+  const head = el('div', { class: 'sheet-label' }, '🚧 Make-Ready');
+  const badge = el('span', { class: 'mr-badge-m' });
+  head.appendChild(badge);
+  body.appendChild(head);
+  const list = el('div', { class: 'cn-list-m' });
+  body.appendChild(list);
+  const render = () => {
+    clear(list);
+    const cs = store.constraintsForTask(taskId);
+    const open = cs.filter((c) => c.status === 'open').length;
+    badge.textContent = cs.length ? (open === 0 ? ' ✅ ready' : ` ${open} open`) : '';
+    badge.className = 'mr-badge-m' + (cs.length && open === 0 ? ' ready' : open ? ' blocked' : '');
+    if (!cs.length) { list.appendChild(el('div', { class: 'ta-empty-m' }, 'No constraints — clear to build.')); return; }
+    cs.forEach((c) => {
+      const overdue = constraintOverdue(c);
+      list.appendChild(el('div', { class: 'cn-row-m type-' + c.type + (c.status === 'cleared' ? ' cleared' : '') + (overdue ? ' overdue' : '') }, [
+        el('div', { class: 'cn-title-m' }, `${c.number} ${c.title}`),
+        el('div', { class: 'cn-meta-m' }, `${CONSTRAINT_TYPE_LABELS[c.type] || c.type}${c.responsible ? ' · ' + c.responsible : ''}${c.needBy ? ' · ' + Dates.fmt(c.needBy) : ''}${c.status === 'cleared' ? ' · cleared' : overdue ? ' · OVERDUE' : ''}`),
+        (c.status === 'open' && store.canEditProject(c.projectId)) ? el('button', { class: 'qbtn', onclick: () => { store.clearConstraint(c.id); render(); } }, 'Clear') : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'cf-input', placeholder: 'Add a constraint…' });
+    const type = el('select', { class: 'cf-input' }, CONSTRAINT_TYPES.map((v) => el('option', { value: v }, CONSTRAINT_TYPE_LABELS[v])));
+    const add = () => { const v = title.value.trim(); if (!v) return; store.createConstraint({ projectId: t.projectId, taskId, title: v, type: type.value }); title.value = ''; render(); };
+    body.appendChild(el('div', { class: 'cn-composer-m' }, [title, type, el('button', { class: 'cf-chat-send', onclick: add }, '+')]));
+  }
+}
+
+// Field issues raised on a task (flag + resolve; promotion is an office action).
+function renderTaskIssues(body, taskId) {
+  const t = store.task(taskId);
+  body.appendChild(el('div', { class: 'sheet-label' }, '⚠️ Issues'));
+  const list = el('div', { class: 'iss-list-m' });
+  body.appendChild(list);
+  const render = () => {
+    clear(list);
+    const issues = store.issuesForTask(taskId);
+    if (!issues.length) { list.appendChild(el('div', { class: 'ta-empty-m' }, 'No issues flagged.')); return; }
+    issues.forEach((i) => {
+      list.appendChild(el('div', { class: 'iss-row-m sev-' + i.severity + (i.status === 'resolved' ? ' resolved' : '') }, [
+        el('div', { class: 'iss-title-m' }, `${i.number} ${i.title}`),
+        el('div', { class: 'iss-meta-m' }, `${i.severity}${i.status === 'resolved' ? ' · resolved' : ''}${i.promotedTo ? ' · → ' + i.promotedTo.kind.toUpperCase() : ''}`),
+        (i.status === 'open' && !i.promotedTo && store.canEditProject(i.projectId)) ? el('button', { class: 'qbtn', onclick: () => { store.resolveIssue(i.id); render(); } }, 'Resolve') : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'cf-input', placeholder: 'Flag an issue…' });
+    const sev = el('select', { class: 'cf-input' }, [['normal', 'Normal'], ['high', 'High'], ['low', 'Low']].map(([v, l]) => el('option', { value: v }, l)));
+    const flag = () => { const v = title.value.trim(); if (!v) return; store.createIssue({ projectId: t.projectId, taskId, title: v, severity: sev.value }); title.value = ''; render(); };
+    body.appendChild(el('div', { class: 'iss-composer-m' }, [title, sev, el('button', { class: 'cf-chat-send', onclick: flag }, '⚠')]));
+  }
+}
+
+// Per-task discussion (the task's slice of its project channel) inside the sheet.
+function renderTaskActivity(body, taskId) {
+  body.appendChild(el('div', { class: 'sheet-label' }, '💬 Activity'));
+  const t = store.task(taskId);
+  if (callsSupported() && store.canEditProject(t.projectId)) {
+    const bar = el('div', { class: 'ta-callbar-m' });
+    const renderBar = () => {
+      clear(bar);
+      const online = store.peopleOnline();
+      bar.appendChild(el('span', { class: 'ta-callbar-label-m' }, '📞 Call about this task'));
+      if (!online.length) { bar.appendChild(el('span', { class: 'ta-callbar-none-m' }, 'No teammates online')); return; }
+      online.slice(0, 3).forEach((p) => bar.appendChild(el('span', { class: 'ta-callchip-m' }, [
+        el('span', {}, p.name),
+        el('button', { class: 'qbtn', title: `Audio call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, false).catch(() => store.notify('Mic unavailable.', 'warn')) }, '📞'),
+        el('button', { class: 'qbtn', title: `Video call ${p.name}`, onclick: () => store.callAboutTask(p, taskId, true).catch(() => store.notify('Camera unavailable.', 'warn')) }, '🎥'),
+      ])));
+    };
+    renderBar();
+    const unsubBar = store.subscribe(() => { if (bar.isConnected) renderBar(); else unsubBar(); });
+    body.appendChild(bar);
+  }
+  const feed = el('div', { class: 'ta-feed-m' });
+  body.appendChild(feed);
+  const renderFeed = () => {
+    clear(feed);
+    const msgs = store.messagesForTask(taskId);
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty-m' }, 'No activity yet — comment or leave a voice note.')); return; }
+    msgs.forEach((m) => {
+      const bot = m.authorId === 'dispatcher';
+      feed.appendChild(el('div', { class: 'ta-msg-m' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+        el('div', { class: 'ta-byline-m' }, [el('span', { class: 'ta-author-m' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time-m' }, msgTime(m.createdAt))]),
+        m.body ? el('div', { class: 'ta-body-m' }, mentionNodes(m.body)) : null,
+        m.voice ? el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+        m.photo ? el('img', { class: 'ta-photo-m', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
+      ]));
+    });
+  };
+  renderFeed();
+  const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
+  if (store.canPostTask(taskId)) {
+    const input = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Comment on this task…' });
+    const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } });
+    const row = [input, el('button', { class: 'cf-chat-send', onclick: post }, '➤')];
+    if (supportsPhotos()) {
+      row.push(el('button', { class: 'cf-chat-ico', title: 'Photo', onclick: async () => { const pic = await capturePhoto({ camera: true }); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
+    }
+    if (supportsRecording()) {
+      let rec = null, iv = null;
+      const recBtn = el('button', { class: 'cf-chat-ico rec', title: 'Voice note' }, '🎤');
+      recBtn.onclick = async () => {
+        if (rec) { clearInterval(iv); const r = rec; rec = null; recBtn.textContent = '🎤'; const clip = await r.stop(); if (clip && clip.b64) { store.postTaskVoice(taskId, clip); renderFeed(); } return; }
+        try { rec = await startRecording(); recBtn.textContent = '⏹'; let s = 0; iv = setInterval(() => { s += 1; }, 1000); }
+        catch { store.notify('Microphone unavailable.', 'warn'); }
+      };
+      row.push(recBtn);
+    }
+    body.appendChild(el('div', { class: 'ta-composer-m' }, row));
+  }
 }
 
 // --- PUNCH tab --------------------------------------------------------------
@@ -440,6 +569,8 @@ function renderConversation(main, channelId) {
           el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
           el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
         ]) : null,
+        m.photo ? el('img', { class: 'cf-bubble-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
+        m.linkedTo && m.linkedTo.kind === 'task' ? el('div', { class: 'cf-taskchip' }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
         el('div', { class: 'cf-bubble-meta' }, [
           el('span', {}, msgTime(m.createdAt)),
           mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
