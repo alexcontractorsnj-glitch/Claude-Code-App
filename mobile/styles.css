@@ -299,3 +299,5 @@ textarea.cf-input { resize: vertical; }
 .cf-call-ctl { width: 60px; height: 60px; border-radius: 50%; border: none; background: rgba(255,255,255,.16); color: #fff; font-size: 24px; }
 .cf-call-ctl.on { background: var(--accent); color: #1a1206; }
 .cf-call-ctl.hangup { background: var(--red); transform: rotate(135deg); }
+
+.cf-chat-ico.lang { font-size: 12px; font-weight: 800; }

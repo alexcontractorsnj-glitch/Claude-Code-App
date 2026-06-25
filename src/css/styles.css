@@ -764,3 +764,5 @@ textarea.input { resize: vertical; font-family: inherit; }
 .call-ctl { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); font-size: 22px; }
 .call-ctl.on { background: var(--accent); color: #1a1206; }
 .call-ctl.hangup { background: var(--red); color: #fff; border-color: var(--red); transform: rotate(135deg); }
+
+.btn.icon.lang { font-size: 11px; font-weight: 800; letter-spacing: .5px; min-width: 34px; }

@@ -14,6 +14,31 @@ export function supportsDictation() {
   return typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 
+// Dictation language — the Web Speech API recognises one language per session,
+// so we let the user toggle (preference persisted). English + US Spanish cover
+// most field crews; add more codes here as needed.
+export const DICTATION_LANGS = [{ code: 'en-US', label: 'EN' }, { code: 'es-US', label: 'ES' }];
+const LANG_KEY = 'buildflow.dictlang';
+export function getDictationLang() {
+  try { return localStorage.getItem(LANG_KEY) || 'en-US'; } catch { return 'en-US'; }
+}
+export function setDictationLang(code) {
+  try { localStorage.setItem(LANG_KEY, code); } catch { /* non-fatal */ }
+}
+export function dictationLabel(code) {
+  const c = code || getDictationLang();
+  const m = DICTATION_LANGS.find((l) => l.code === c);
+  return m ? m.label : c.slice(0, 2).toUpperCase();
+}
+// Toggle to the next configured language and return its code.
+export function cycleDictationLang() {
+  const cur = getDictationLang();
+  const i = DICTATION_LANGS.findIndex((l) => l.code === cur);
+  const next = DICTATION_LANGS[(i + 1) % DICTATION_LANGS.length].code;
+  setDictationLang(next);
+  return next;
+}
+
 function pickMime() {
   const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
@@ -56,11 +81,11 @@ export async function startRecording() {
 
 // Start dictation. onText(finalSoFar, interim) fires as speech is recognised;
 // onEnd(finalText) fires when it stops. Returns the recogniser (has .stop()).
-export function startDictation(onText, onEnd) {
+export function startDictation(onText, onEnd, lang) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return null;
   const r = new SR();
-  r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+  r.lang = lang || getDictationLang(); r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
   let final = '';
   r.onresult = (e) => {
     let interim = '';

@@ -8,7 +8,7 @@
 import { store, Dates } from '../data.js';
 import { el, clear } from '../utils.js';
 import { searchMessages, parseMentions } from '../messaging.js';
-import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur } from '../voice.js';
+import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../voice.js';
 import { callsSupported } from '../webrtc.js';
 
 const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0 };
@@ -210,6 +210,8 @@ export function renderMessages(mount, ctx) {
       const controls = [];
       if (supportsDictation()) {
         let dict = null;
+        const langBtn = el('button', { class: 'btn icon lang', title: 'Dictation language (English / Spanish)' }, dictationLabel());
+        langBtn.onclick = () => { langBtn.textContent = dictationLabel(cycleDictationLang()); };
         const micBtn = el('button', { class: 'btn icon', title: 'Dictate' }, '🎙');
         micBtn.onclick = () => {
           if (dict) { dict.stop(); dict = null; micBtn.classList.remove('on'); return; }
@@ -217,7 +219,7 @@ export function renderMessages(mount, ctx) {
           dict = startDictation((final, interim) => { ta.value = base + final + interim; }, () => { dict = null; micBtn.classList.remove('on'); });
           if (dict) micBtn.classList.add('on');
         };
-        controls.push(micBtn);
+        controls.push(langBtn, micBtn);
       }
       if (supportsRecording()) {
         controls.push(el('button', { class: 'btn icon', title: 'Voice note', onclick: async () => { try { view.rec = await startRecording(); rerender(); } catch { store && store._notify && store._notify('Microphone unavailable.', 'warn'); } } }, '🎤'));
