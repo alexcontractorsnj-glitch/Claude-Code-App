@@ -247,6 +247,25 @@ async function callClaude(system, messages) {
   } catch (e) { console.error('dispatcher: Claude error', e.message); return null; }
 }
 
+// A plain text completion (no tools) — used to enrich deterministic output like
+// the post-call recap. Returns the text, or null on no-key / any failure.
+async function claudeText(system, prompt, maxTokens = 220) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const model = process.env.DISPATCHER_MODEL || 'claude-opus-4-8';
+  try {
+    const res = await fetch((process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com') + '/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!res.ok) { console.error('claudeText HTTP', res.status); return null; }
+    const j = await res.json();
+    const t = Array.isArray(j.content) ? j.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim() : '';
+    return t || null;
+  } catch (e) { console.error('claudeText error', e.message); return null; }
+}
+
 function execDispatcherTool(name, input, actor) {
   const by = actor ? '@' + actor.username : 'dispatcher';
   try {
@@ -973,7 +992,17 @@ async function handleApi(req, res, urlPath) {
         if (!t) return send(res, 404, { error: 'task not found' });
         if (!canEditProject(actor, t.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
         const body = await readBody(req).catch(() => ({}));
-        const text = callSummary(state, { taskId: id, callerName: actor.name, peerName: body.peerName || '', durationSec: +body.durationSec || 0, video: !!body.video });
+        let text = callSummary(state, { taskId: id, callerName: actor.name, peerName: body.peerName || '', durationSec: +body.durationSec || 0, video: !!body.video });
+        // With a key, prepend a grounded one-line AI note; the deterministic
+        // recap below it is always present as the reliable record.
+        if (process.env.ANTHROPIC_API_KEY) {
+          const recent = (state.messages || []).filter((m) => m.linkedTo && m.linkedTo.id === id).slice(-6).map((m) => `${m.authorName}: ${m.body || '(voice/photo)'}`).join('\n');
+          const ai = await claudeText(
+            'You are the Dispatcher for a construction team. In ONE sentence, note what a just-finished phone call about a task most likely covered and the single most useful next step. Ground it ONLY in the facts provided — do not invent specifics. No preamble, no greeting.',
+            `Task: "${t.name}". Call: ${actor.name}${body.peerName ? ` with ${body.peerName}` : ''}, ${body.video ? 'video' : 'audio'}.\nRecent activity on this task:\n${recent || '(none)'}\n\nDeterministic recap (for context):\n${text}`,
+          ).catch(() => null);
+          if (ai) text = `🤖 ${ai}\n\n${text}`;
+        }
         const channel = (state.channels || []).find((c) => c.id === channelIdForProject(t.projectId));
         if (!channel) return send(res, 404, { error: 'no channel for project' });
         const msg = postDispatcher(channel, text, 'reply', { kind: 'task', id });
