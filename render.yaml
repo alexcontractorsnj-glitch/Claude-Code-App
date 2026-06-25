@@ -1,0 +1,22 @@
+# Render.com blueprint — one-tap deploy of the BuildFlow server.
+# In the Render dashboard: New + → Blueprint → connect this repo. Render runs
+# `node server.mjs` and injects PORT (server.mjs already reads process.env.PORT).
+#
+# Notes:
+#  • Zero dependencies, so the build is essentially a no-op.
+#  • The free plan's disk is EPHEMERAL — data/ (schedule, users, messages) resets
+#    on each deploy/restart. Fine for a live demo; add a paid Persistent Disk
+#    mounted at ./data for durable storage.
+#  • Set ANTHROPIC_API_KEY in the dashboard (Environment) to switch the AI
+#    Dispatcher from its rule-based fallback to the full Claude agent.
+services:
+  - type: web
+    name: buildflow
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /          # "/" serves the app (200); /api/state is auth-gated (401)
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false        # set this secret in the Render dashboard, not in git
