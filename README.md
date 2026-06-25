@@ -93,6 +93,17 @@ with **online presence** and **"typing…"** indicators riding the same stream.
 **ETag polling stays as the fallback** (and the static GitHub Pages demo, which
 has no server, runs chat in local mode on the seeded channels).
 
+**🧵 Task Activity (communication on the work item).** Every task has an
+**Activity** feed — comment or leave a **voice note** right on the task (desktop
+editor + the Corefield task sheet). Per the dominant industry model
+(Fieldwire/Linear/Asana/ClickUp — see `docs/task-communication-and-capture-plan.md`),
+a task thread is **not a separate channel**: it's a **filtered/synced view of the
+project channel** joined by the `linkedTo={kind,id}` hook — *one source of truth,
+two views*. Task-linked messages appear on the task **and** in the channel (with a
+clickable **↳ task chip**), so nothing fragments; work cards show a 💬 count.
+(Phase A of the task-comms plan; photos, issue-flags, and Last-Planner constraints
+are the next phases.)
+
 **📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
 online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
 peer-to-peer **WebRTC**, with offer/answer/ICE **signaled over the same SSE

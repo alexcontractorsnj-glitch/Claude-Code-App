@@ -160,6 +160,7 @@ export function renderMessages(mount, ctx) {
           el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, timeOf(m.createdAt))]),
           m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,
           voiceEl(m),
+          (m.linkedTo && m.linkedTo.kind === 'task') ? el('div', { class: 'msg-taskchip', onclick: () => ctx.openTask && ctx.openTask(m.linkedTo.id) }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
         ]),
       ]));
     });

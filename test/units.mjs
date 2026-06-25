@@ -22,7 +22,7 @@ const { makeDoc, nextDocNumber, isOpen, overdueDocs } = await import('../src/js/
 const { makePunchItem, closeoutSummary, isOpenPunch, cleanAttachments } = await import('../src/js/punch.js');
 const { computeAlerts, alertSummary } = await import('../src/js/alerts.js');
 const { bucketTasks, workSummary, stepProgress, coerceStatus, outboxAdd, outboxRemove, outboxSummary, applyPendingTasks, dueLabel } = await import('../src/mobile/core.js');
-const { makeMessage, makeChannel, seedChannels, capChannel, setRead, lastRead, unreadCount, lastMessage, parseMentions, searchMessages, channelIdForProject, MSG_CAP } = await import('../src/js/messaging.js');
+const { makeMessage, makeChannel, seedChannels, capChannel, setRead, lastRead, unreadCount, lastMessage, parseMentions, searchMessages, channelIdForProject, MSG_CAP, messagesForTask, taskActivityCount } = await import('../src/js/messaging.js');
 
 section('seed + dates');
 const seed = seedState();
@@ -201,6 +201,18 @@ const brief = fallbackBrief(seed, 'p1');
 ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a digest');
 ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
 ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
+
+section('task activity (linkedTo)');
+let tam = [];
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'general chatter' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'on the footing', linkedTo: { kind: 'task', id: 't4' }, createdAt: '2026-06-01T09:00:00Z' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'footing follow-up', linkedTo: { kind: 'task', id: 't4' }, createdAt: '2026-06-01T10:00:00Z' }));
+tam.push(makeMessage(tam, { channelId: 'ch-p1', body: 'about steel', linkedTo: { kind: 'task', id: 't7' } }));
+ok(makeMessage([], { channelId: 'c', body: 'x' }).linkedTo === null, 'message linkedTo defaults null');
+ok(messagesForTask(tam, 't4').length === 2 && taskActivityCount(tam, 't4') === 2, 'messagesForTask filters by task');
+ok(messagesForTask(tam, 't4')[0].body === 'on the footing', 'task activity sorted oldest→newest');
+ok(taskActivityCount(tam, 't7') === 1 && taskActivityCount(tam, 'tZ') === 0, 'taskActivityCount per task');
+ok(!messagesForTask(tam, 't4').some((m) => m.body === 'general chatter'), 'general chatter excluded from task activity');
 
 section('dictation language (EN/ES)');
 const voiceMod = await import('../src/js/voice.js');

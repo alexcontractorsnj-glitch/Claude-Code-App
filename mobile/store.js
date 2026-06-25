@@ -11,7 +11,7 @@ import { makePunchItem } from '../src/js/punch.js';
 import { makeReport } from '../src/js/fieldreports.js';
 import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
-  messagesForChannel, lastMessage, channelIdForProject,
+  messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from '../src/js/messaging.js';
 import { CallManager } from '../src/js/webrtc.js';
 import {
@@ -353,12 +353,27 @@ class MobileStore {
     return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
   }
 
-  sendMessage(channelId, body) {
+  sendMessage(channelId, body, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !String(body || '').trim()) return;
     if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
-    this._queueWrite({ kind: 'message.send', channelId, method: 'POST', path: '/messages', body: { channelId, body: String(body).trim() } });
+    this._queueWrite({ kind: 'message.send', channelId, method: 'POST', path: '/messages', body: { channelId, body: String(body).trim(), linkedTo: linkedTo || null } });
     this.markRead(channelId);
+  }
+
+  // ---- task Activity (a task's slice of its project channel) ----
+  messagesForTask(taskId) { return messagesForTask(this.messages, taskId); }
+  taskActivityCount(taskId) { return messagesForTask(this.messages, taskId).length; }
+  canPostTask(taskId) { const t = this.task(taskId); return !!t && this.canEditProject(t.projectId); }
+  postTaskMessage(taskId, body) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendMessage(ch.id, body, { kind: 'task', id: taskId });
+  }
+  postTaskVoice(taskId, clip) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
   }
 
   voiceSrc(msg) {
@@ -368,11 +383,11 @@ class MobileStore {
 
   // Send a voice note (queued through the outbox so it survives no signal).
   // clip = { mime, b64, dur }.
-  sendVoice(channelId, clip) {
+  sendVoice(channelId, clip, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !clip || !clip.b64) return;
     if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
-    this._queueWrite({ kind: 'voice.send', channelId, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
+    this._queueWrite({ kind: 'voice.send', channelId, linkedTo: linkedTo || null, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
     this.markRead(channelId);
   }
 
@@ -447,11 +462,11 @@ class MobileStore {
       this.state.reports.push(makeReport(this.state.reports, { ...op.body, createdBy: this.user }));
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
@@ -474,10 +489,10 @@ class MobileStore {
       this.state.reports.push({ id: op.qid, attachments: [], _provisional: true, ...op.body });
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], linkedTo: op.body.linkedTo || null, createdAt: new Date().toISOString(), _provisional: true });
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
     }
   }
 
@@ -496,7 +511,7 @@ class MobileStore {
           if (op.kind === 'voice.send') {
             // Two-step: upload the audio blob, then post the message referencing it.
             const up = await api('POST', '/voice', { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
-            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, voice: { id: up.data.id } }));
+            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, voice: { id: up.data.id }, linkedTo: op.linkedTo || null }));
           } else {
             const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
             ({ data, etag } = await api(op.method, op.path, op.body, headers));

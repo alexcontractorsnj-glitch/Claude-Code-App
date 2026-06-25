@@ -24,6 +24,7 @@ import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
+import { startRecording, supportsRecording, fmtDur } from './voice.js';
 
 const ctx = {
   view: 'gantt',
@@ -369,6 +370,63 @@ function historySection(taskId) {
   return el('div', { class: 'hist-section' }, [el('div', { class: 'hist-head' }, 'History'), btn, body]);
 }
 
+// --- Task Activity (per-task discussion: the task's slice of its channel) ----
+function taFmt(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+function taskActivitySection(taskId) {
+  const wrap = el('div', { class: 'task-activity' });
+  const count = el('span', { class: 'ta-count' });
+  wrap.appendChild(el('div', { class: 'ta-head' }, [el('span', {}, '💬 Activity'), count]));
+  const feed = el('div', { class: 'ta-feed' });
+  wrap.appendChild(feed);
+
+  const renderFeed = () => {
+    clear(feed);
+    const msgs = store.messagesForTask(taskId);
+    count.textContent = msgs.length ? String(msgs.length) : '';
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty' }, 'No activity yet — comment or leave a voice note about this task.')); return; }
+    msgs.forEach((m) => {
+      const bot = m.authorId === 'dispatcher';
+      feed.appendChild(el('div', { class: 'ta-msg' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+        el('div', { class: 'ta-byline' }, [el('span', { class: 'ta-author' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time' }, taFmt(m.createdAt))]),
+        m.body ? el('div', { class: 'ta-body' }, m.body) : null,
+        m.voice ? el('audio', { class: 'ta-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+      ]));
+    });
+    feed.scrollTop = feed.scrollHeight;
+  };
+  renderFeed();
+  // Live updates while the modal is open (SSE/poll); self-unsubscribe when gone.
+  const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
+
+  if (store.canPostTask(taskId)) {
+    const input = el('input', { class: 'input', placeholder: 'Comment on this task…  (@name to mention)' });
+    const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); post(); } });
+    const controls = [input, el('button', { class: 'btn primary sm', onclick: post }, 'Post')];
+    if (supportsRecording()) {
+      let rec = null, iv = null;
+      const recBtn = el('button', { class: 'btn icon', title: 'Voice note' }, '🎤');
+      recBtn.onclick = async () => {
+        if (rec) {
+          clearInterval(iv); const r = rec; rec = null; recBtn.textContent = '🎤'; recBtn.classList.remove('on');
+          const clip = await r.stop(); if (clip && clip.b64) { store.postTaskVoice(taskId, clip); renderFeed(); }
+          return;
+        }
+        try { rec = await startRecording(); recBtn.classList.add('on'); let s = 0; recBtn.textContent = '⏹ 0:00'; iv = setInterval(() => { s += 1; recBtn.textContent = '⏹ ' + fmtDur(s); }, 1000); }
+        catch { store._notify('Microphone unavailable.', 'warn'); }
+      };
+      controls.push(recBtn);
+    }
+    wrap.appendChild(el('div', { class: 'ta-composer' }, controls));
+  } else {
+    wrap.appendChild(el('div', { class: 'ta-readonly' }, 'Read-only — you can’t post to this project’s tasks.'));
+  }
+  return wrap;
+}
+
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
   const isNew = taskId == null;
@@ -450,6 +508,7 @@ function openEditor(taskId) {
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
       !isNew ? metaPanel(t) : null,
+      !isNew ? taskActivitySection(taskId) : null,
       (!isNew && store.mode === 'remote') ? historySection(taskId) : null,
     ]),
     el('div', { class: 'modal-foot' }, [

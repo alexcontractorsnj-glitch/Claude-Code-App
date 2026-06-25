@@ -20,7 +20,7 @@ import { makeReport } from './fieldreports.js';
 import { makePunchItem } from './punch.js';
 import {
   makeMessage, capChannel, setRead, lastRead, unreadCount,
-  messagesForChannel, lastMessage, channelIdForProject,
+  messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from './messaging.js';
 import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
 import { CallManager } from './webrtc.js';
@@ -684,6 +684,21 @@ class Store {
     return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
   }
 
+  // ---- task Activity (a task's slice of its project channel, via linkedTo) ----
+  messagesForTask(taskId) { return messagesForTask(this.messages, taskId); }
+  taskActivityCount(taskId) { return messagesForTask(this.messages, taskId).length; }
+  canPostTask(taskId) { const t = this.task(taskId); return !!t && this.canEditProject(t.projectId); }
+  postTaskMessage(taskId, body) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendMessage(ch.id, body, { linkedTo: { kind: 'task', id: taskId } });
+  }
+  postTaskVoice(taskId, clip) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
+  }
+
   async sendMessage(channelId, body, extra = {}) {
     const ch = this.channel(channelId);
     if (!ch) return null;
@@ -718,7 +733,7 @@ class Store {
   // Send a voice note. `clip` = { mime, b64, dur }. Remote uploads the audio to
   // /api/voice (kept out of /api/state) then posts a message referencing it;
   // local/demo embeds the audio as a data-URL on the message.
-  async sendVoice(channelId, clip) {
+  async sendVoice(channelId, clip, linkedTo) {
     const ch = this.channel(channelId);
     if (!ch || !clip || !clip.b64) return null;
     if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
@@ -726,7 +741,7 @@ class Store {
       this._setSyncing(true);
       try {
         const up = await api('POST', '/voice', { mime: clip.mime, data: clip.b64, dur: clip.dur });
-        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id } });
+        const { data, etag } = await api('POST', '/messages', { channelId, voice: { id: up.data.id }, linkedTo: linkedTo || null });
         this.rev = revOf(etag) ?? this.rev;
         this.state.messages.push(data);
         this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
@@ -736,7 +751,7 @@ class Store {
       finally { this._setSyncing(false); }
     }
     const msg = makeMessage(this.state.messages, {
-      channelId, authorId: this._uid(), authorName: this.user,
+      channelId, authorId: this._uid(), authorName: this.user, linkedTo: linkedTo || null,
       voice: { url: `data:${clip.mime};base64,${clip.b64}`, dur: clip.dur, mime: clip.mime },
     });
     this.state.messages.push(msg);

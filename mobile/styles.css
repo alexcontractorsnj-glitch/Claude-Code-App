@@ -301,3 +301,17 @@ textarea.cf-input { resize: vertical; }
 .cf-call-ctl.hangup { background: var(--red); transform: rotate(135deg); }
 
 .cf-chat-ico.lang { font-size: 12px; font-weight: 800; }
+
+/* ---- Task Activity (in the task sheet) ---- */
+.ta-feed-m { display: flex; flex-direction: column; gap: 7px; max-height: 40vh; overflow-y: auto; margin-bottom: 10px; }
+.ta-empty-m { color: var(--text-faint); font-size: 13px; padding: 8px 2px; }
+.ta-msg-m { background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px; }
+.ta-msg-m.bot { background: rgba(139,92,246,.12); border-color: rgba(139,92,246,.3); }
+.ta-msg-m.pending { opacity: .65; }
+.ta-byline-m { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.ta-author-m { font-weight: 700; font-size: 12.5px; } .ta-time-m { font-size: 11px; color: var(--text-faint); }
+.ta-body-m { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+.ta-composer-m { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.ta-composer-m .cf-input { flex: 1; min-height: 42px; }
+.cf-card-activity { font-size: 11px; font-weight: 700; color: var(--blue); }
+.cf-taskchip { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--accent-2); background: rgba(245,166,35,.12); border-radius: 6px; padding: 1px 6px; margin-top: 3px; }

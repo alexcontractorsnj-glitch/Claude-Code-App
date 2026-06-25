@@ -100,6 +100,12 @@ try {
   await login('admin', 'admin123');
   ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'message.send'), 'message.send audited');
 
+  // task Activity — a message linked to a task (the task's slice of the channel)
+  const tmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', body: 'Footing rebar looks good', linkedTo: { kind: 'task', id: 't4' } });
+  ok(tmsg.status === 201 && tmsg.data.linkedTo && tmsg.data.linkedTo.id === 't4', 'message carries linkedTo task');
+  const stTask = (await http('GET', '/api/state')).data;
+  ok(stTask.messages.filter((m) => m.linkedTo && m.linkedTo.kind === 'task' && m.linkedTo.id === 't4').length >= 1, 'linked message persisted in shared store (one source, two views)');
+
   // --- voice notes ---
   const b64 = Buffer.from('fake-audio-bytes').toString('base64');
   const up = await http('POST', '/api/voice', { mime: 'audio/webm', data: b64, dur: 5 });

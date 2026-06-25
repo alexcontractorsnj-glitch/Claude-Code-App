@@ -175,6 +175,7 @@ function taskCard(t) {
       el('div', { class: 'cf-card-foot' }, [
         el('span', { class: 'cf-status', style: { color: si.color, borderColor: si.color } }, si.label),
         el('span', { class: 'cf-due ' + due.tone }, due.text),
+        store.taskActivityCount(t.id) ? el('span', { class: 'cf-card-activity' }, '💬 ' + store.taskActivityCount(t.id)) : null,
         t.pending ? el('span', { class: 'cf-pendtag' }, '⟳ queued') : null,
       ]),
     ]),
@@ -197,11 +198,7 @@ function openTaskSheet(id) {
       t.lastEditedBy ? metaRow('Last edit', t.lastEditedBy) : null,
     ]));
 
-    if (!editable) {
-      body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
-      return;
-    }
-
+    if (editable) {
     // progress stepper
     const pctEl = el('div', { class: 'step-pct' }, (t.progress || 0) + '%');
     const apply = (val) => { store.updateTaskProgress(t.id, val); pctEl.textContent = val + '%'; };
@@ -231,7 +228,50 @@ function openTaskSheet(id) {
     };
     rebuild();
     body.appendChild(chips);
+    } else {
+      body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
+    }
+    renderTaskActivity(body, id);
   });
+}
+
+// Per-task discussion (the task's slice of its project channel) inside the sheet.
+function renderTaskActivity(body, taskId) {
+  body.appendChild(el('div', { class: 'sheet-label' }, '💬 Activity'));
+  const feed = el('div', { class: 'ta-feed-m' });
+  body.appendChild(feed);
+  const renderFeed = () => {
+    clear(feed);
+    const msgs = store.messagesForTask(taskId);
+    if (!msgs.length) { feed.appendChild(el('div', { class: 'ta-empty-m' }, 'No activity yet — comment or leave a voice note.')); return; }
+    msgs.forEach((m) => {
+      const bot = m.authorId === 'dispatcher';
+      feed.appendChild(el('div', { class: 'ta-msg-m' + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+        el('div', { class: 'ta-byline-m' }, [el('span', { class: 'ta-author-m' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time-m' }, msgTime(m.createdAt))]),
+        m.body ? el('div', { class: 'ta-body-m' }, mentionNodes(m.body)) : null,
+        m.voice ? el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+      ]));
+    });
+  };
+  renderFeed();
+  const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
+  if (store.canPostTask(taskId)) {
+    const input = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Comment on this task…' });
+    const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } });
+    const row = [input, el('button', { class: 'cf-chat-send', onclick: post }, '➤')];
+    if (supportsRecording()) {
+      let rec = null, iv = null;
+      const recBtn = el('button', { class: 'cf-chat-ico rec', title: 'Voice note' }, '🎤');
+      recBtn.onclick = async () => {
+        if (rec) { clearInterval(iv); const r = rec; rec = null; recBtn.textContent = '🎤'; const clip = await r.stop(); if (clip && clip.b64) { store.postTaskVoice(taskId, clip); renderFeed(); } return; }
+        try { rec = await startRecording(); recBtn.textContent = '⏹'; let s = 0; iv = setInterval(() => { s += 1; }, 1000); }
+        catch { store.notify('Microphone unavailable.', 'warn'); }
+      };
+      row.push(recBtn);
+    }
+    body.appendChild(el('div', { class: 'ta-composer-m' }, row));
+  }
 }
 
 // --- PUNCH tab --------------------------------------------------------------
@@ -440,6 +480,7 @@ function renderConversation(main, channelId) {
           el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
           el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
         ]) : null,
+        m.linkedTo && m.linkedTo.kind === 'task' ? el('div', { class: 'cf-taskchip' }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
         el('div', { class: 'cf-bubble-meta' }, [
           el('span', {}, msgTime(m.createdAt)),
           mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
