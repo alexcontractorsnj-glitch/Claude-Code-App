@@ -86,9 +86,11 @@ function renderBar() {
     ...projects.map((p) => el('option', { value: p.id, selected: store.projectId === p.id }, p.name)),
   ]);
   const pending = store.pendingCount();
-  const pill = store.online
-    ? el('span', { class: 'cf-pill online' }, pending ? `Syncing ${pending}…` : 'Online')
-    : el('span', { class: 'cf-pill offline' }, pending ? `Offline · ${pending} queued` : 'Offline');
+  const pill = store.local
+    ? el('span', { class: 'cf-pill demo' }, 'Demo')
+    : store.online
+      ? el('span', { class: 'cf-pill online' }, pending ? `Syncing ${pending}…` : 'Online')
+      : el('span', { class: 'cf-pill offline' }, pending ? `Offline · ${pending} queued` : 'Offline');
   bar.append(
     el('div', { class: 'cf-brand' }, [
       el('span', { class: 'cf-mark' }, '◭'),
@@ -374,15 +376,22 @@ function renderMe(main) {
     el('div', { class: 'cf-me-name' }, store.user || '—'),
     el('div', { class: 'cf-me-role' }, (store.role || '').toUpperCase() + (store.isUnrestricted() ? ' · all projects' : (store.scope.length ? ' · ' + store.scope.length + ' project(s)' : ''))),
   ]));
-  main.appendChild(el('div', { class: 'cf-mecard' }, [
+  main.appendChild(el('div', { class: 'cf-mecard' }, store.local ? [
+    meRow('Mode', 'Local demo', 'warn'),
+    meRow('Data', 'On this device only', ''),
+    meRow('Schedule rev', store.rev != null ? '#' + store.rev : '—'),
+  ] : [
     meRow('Connection', store.online ? 'Online' : 'Offline', store.online ? 'good' : 'bad'),
     meRow('Pending sync', pending ? pending + ' queued change(s)' : 'All synced', pending ? 'warn' : 'good'),
     meRow('Schedule rev', store.rev != null ? '#' + store.rev : '—'),
   ]));
   main.appendChild(el('div', { class: 'cf-me-actions' }, [
-    el('a', { class: 'cf-link', href: '/', target: '_blank', rel: 'noopener' }, 'Open full BuildFlow desktop →'),
-    el('button', { class: 'cf-submit danger', onclick: () => store.logout() }, 'Sign out'),
+    el('a', { class: 'cf-link', href: '../', target: '_blank', rel: 'noopener' }, 'Open full BuildFlow desktop →'),
+    store.local
+      ? el('button', { class: 'cf-submit danger', onclick: () => store.logout() }, 'Reset demo data')
+      : el('button', { class: 'cf-submit danger', onclick: () => store.logout() }, 'Sign out'),
   ]));
+  if (store.local) main.appendChild(el('div', { class: 'cf-empty', style: { padding: '14px 6px 0' } }, 'Demo mode — no server. Changes are saved only in this browser. Sign-in + live multi-user sync activate when served by the BuildFlow API.'));
   main.appendChild(el('div', { class: 'cf-foot' }, 'Corefield · BuildFlow field companion'));
 }
 

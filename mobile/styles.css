@@ -60,6 +60,7 @@ button { cursor: pointer; }
 .cf-pill { font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 20px; white-space: nowrap; }
 .cf-pill.online { color: var(--green); background: rgba(52,199,89,.12); border: 1px solid rgba(52,199,89,.3); }
 .cf-pill.offline { color: var(--amber); background: rgba(245,166,35,.12); border: 1px solid rgba(245,166,35,.35); }
+.cf-pill.demo { color: var(--blue); background: rgba(59,130,246,.12); border: 1px solid rgba(59,130,246,.35); }
 
 /* ---- main scroll area ---- */
 .cf-main {

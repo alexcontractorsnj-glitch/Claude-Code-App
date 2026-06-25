@@ -6,7 +6,9 @@
 //  connectivity returns. Pure rules live in ../src/mobile/core.js.
 // ============================================================================
 
-import { TRADES, STATUSES, Dates, normalizeState } from '../src/js/seed.js';
+import { TRADES, STATUSES, Dates, normalizeState, seedState, makeTask, applyTaskPatch } from '../src/js/seed.js';
+import { makePunchItem } from '../src/js/punch.js';
+import { makeReport } from '../src/js/fieldreports.js';
 import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
   outboxAdd, outboxRemove, outboxSummary,
@@ -74,6 +76,7 @@ class MobileStore {
 
     this.authState = 'unknown';        // unknown | required | authed
     this.user = null; this.role = null; this.scope = [];
+    this.local = false;                // true when there's no /api backend (static host) → demo mode
     this.online = true;
     this.rev = null;
     this._poll = null;
@@ -109,8 +112,32 @@ class MobileStore {
       this._startPolling();
     } catch (err) {
       if (err && err.status === 401) { this.authState = 'required'; this._emitAuth(); }
-      else { this._setOnline(false); this.authState = this.user ? 'authed' : 'required'; this._emitAuth(); }
+      else if (err && err.offline && this.user) { this._setOnline(false); this.authState = 'authed'; this._emitAuth(); }
+      else { this._enterLocal(); }              // no /api backend (e.g. GitHub Pages) → demo mode
     }
+  }
+
+  // Static-host demo mode: no server, no login. Runs on seeded data with full
+  // local rights and LocalStorage-only persistence (mirrors the desktop app's
+  // offline fallback), so Corefield works on any plain static host.
+  _enterLocal() {
+    this.local = true;
+    this.user = this.user || 'Field Demo';
+    this.role = 'admin'; this.scope = [];
+    if (!this.state || !Array.isArray(this.state.tasks) || !this.state.tasks.length) {
+      this.state = normalizeState(seedState());
+    }
+    this.authState = 'authed';
+    this._emitAuth();
+    this._emit();
+  }
+
+  resetLocalDemo() {
+    if (!this.local) return;
+    this.state = normalizeState(seedState());
+    this.outbox = [];
+    this._emit();
+    this.notify('Demo data reset.', 'info');
   }
 
   _applyUser(u) {
@@ -138,6 +165,7 @@ class MobileStore {
   }
 
   async logout() {
+    if (this.local) { this.resetLocalDemo(); return; }   // no session to drop in demo mode
     try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
     this.user = null; this.role = null; this.authState = 'required';
@@ -146,14 +174,16 @@ class MobileStore {
 
   // ---- capability mirrors (server is the real boundary) ----
   can(action) {
+    if (this.local) return true;
     if (this.authState !== 'authed') return false;
     const rank = { viewer: 0, pm: 1, admin: 2 }[this.role] ?? -1;
     if (action === 'read') return rank >= 0;
     if (action === 'write') return rank >= 1;
     return rank >= 2;
   }
-  isUnrestricted() { return this.role === 'admin' || (this.can('write') && this.scope.length === 0); }
+  isUnrestricted() { return this.local || this.role === 'admin' || (this.can('write') && this.scope.length === 0); }
   canEditProject(pid) {
+    if (this.local) return true;
     if (!this.can('write')) return false;
     return this.isUnrestricted() || this.scope.includes(pid);
   }
@@ -162,6 +192,7 @@ class MobileStore {
   }
 
   _setOnline(v) {
+    if (this.local) return;            // demo mode ignores connectivity
     const was = this.online;
     this.online = v;
     if (v && !was) { this.notify('Back online — syncing…', 'info'); this._flush(); this._refresh(); }
@@ -180,6 +211,7 @@ class MobileStore {
     }
   }
   async _refresh() {
+    if (this.local) return;
     try { await this._hydrate(); } catch { /* stay on cache */ }
   }
   _startPolling() {
@@ -269,13 +301,33 @@ class MobileStore {
   }
 
   // Apply optimistically, then attempt the network call (queue on failure).
+  // In demo (local) mode there's no server, so writes are committed locally
+  // through the domain factories and persisted to LocalStorage only.
   _queueWrite(op) {
     op.qid = newQid();
+    if (this.local) return this._localWrite(op);
     this._applyLocal(op);
     this.outbox = outboxAdd(this.outbox, op);
     lsSet(LS_OUTBOX, this.outbox);
     this._emit();
     this._flush();
+  }
+
+  _localWrite(op) {
+    if (op.kind === 'task.patch') {
+      const t = this.state.tasks.find((x) => x.id === op.targetId);
+      if (t) { applyTaskPatch(t, op.body); t.rev = (t.rev || 1) + 1; }
+    } else if (op.kind === 'punch.patch') {
+      const p = (this.state.punch || []).find((x) => x.id === op.targetId);
+      if (p) Object.assign(p, op.body, { updatedAt: new Date().toISOString() });
+    } else if (op.kind === 'punch.create') {
+      if (!Array.isArray(this.state.punch)) this.state.punch = [];
+      this.state.punch.push(makePunchItem(this.state.punch, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'report.create') {
+      if (!Array.isArray(this.state.reports)) this.state.reports = [];
+      this.state.reports.push(makeReport(this.state.reports, { ...op.body, createdBy: this.user }));
+    }
+    this._emit();
   }
 
   // Optimistic local apply so the UI updates instantly (online or not).
@@ -300,7 +352,7 @@ class MobileStore {
   // offline); drops ops that the server rejects (conflict / permission) with a
   // note, so the queue can never wedge.
   async _flush() {
-    if (this._flushing || !this.outbox.length) return;
+    if (this.local || this._flushing || !this.outbox.length) return;
     if (this.authState !== 'authed') return;
     this._flushing = true;
     try {
