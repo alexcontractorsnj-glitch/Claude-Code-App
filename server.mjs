@@ -276,6 +276,10 @@ async function claudeText(system, prompt, maxTokens = 220) {
 
 function execDispatcherTool(name, input, actor) {
   const by = actor ? '@' + actor.username : 'dispatcher';
+  // The agent acts ON BEHALF OF the asker, so it must never let a project-scoped
+  // PM mutate data outside their scope. Read-only status is unrestricted.
+  const denied = (projectId) => actor && !canEditProject(actor, projectId)
+    ? { ok: false, error: `you do not have access to project ${projectId}` } : null;
   try {
     if (name === 'get_field_status') {
       const pid = input.projectId || 'all';
@@ -291,6 +295,7 @@ function execDispatcherTool(name, input, actor) {
     if (name === 'reschedule_task') {
       const t = (state.tasks || []).find((x) => x.id === input.taskId);
       if (!t) return { ok: false, error: 'task not found' };
+      const d = denied(t.projectId); if (d) return d;
       const patch = {}; if (input.start) patch.start = input.start; if (input.end) patch.end = input.end;
       applyTaskPatch(t, patch); t.lastEditedBy = DISPATCHER.name; t.lastEditedAt = new Date().toISOString(); t.rev = (t.rev || 1) + 1;
       bump(); persistState();
@@ -300,6 +305,7 @@ function execDispatcherTool(name, input, actor) {
     if (name === 'set_task_status') {
       const t = (state.tasks || []).find((x) => x.id === input.taskId);
       if (!t) return { ok: false, error: 'task not found' };
+      const d = denied(t.projectId); if (d) return d;
       applyTaskPatch(t, { status: input.status }); t.lastEditedBy = DISPATCHER.name; t.rev = (t.rev || 1) + 1;
       bump(); persistState();
       logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: t.id, targetName: t.name, projectId: t.projectId, detail: `status ${t.status} (${by})` });
@@ -308,6 +314,7 @@ function execDispatcherTool(name, input, actor) {
     if (name === 'update_delivery') {
       const d = (state.deliveries || []).find((x) => x.id === input.deliveryId);
       if (!d) return { ok: false, error: 'delivery not found' };
+      const dn = denied(d.projectId); if (dn) return dn;
       if (input.status && DELIVERY_STATUSES.includes(input.status)) d.status = input.status;
       if (input.due) d.due = input.due;
       d.updatedBy = DISPATCHER.name; d.updatedAt = new Date().toISOString(); d.rev = (d.rev || 1) + 1;
@@ -316,6 +323,7 @@ function execDispatcherTool(name, input, actor) {
       return { ok: true, delivery: d.id, status: d.status, due: d.due };
     }
     if (name === 'create_punch_item') {
+      const d = denied(input.projectId); if (d) return d;
       if (!Array.isArray(state.punch)) state.punch = [];
       const p = makePunchItem(state.punch, { projectId: input.projectId, title: input.title, location: input.location, priority: input.priority, createdBy: DISPATCHER.name, createdAt: new Date().toISOString() });
       state.punch.push(p); bump(); persistState();
@@ -325,6 +333,7 @@ function execDispatcherTool(name, input, actor) {
     if (name === 'clear_constraint') {
       const c = (state.constraints || []).find((x) => x.id === input.constraintId);
       if (!c) return { ok: false, error: 'constraint not found' };
+      const d = denied(c.projectId); if (d) return d;
       c.status = 'cleared'; c.clearedBy = DISPATCHER.name; c.clearedAt = new Date().toISOString(); c.rev = (c.rev || 1) + 1;
       bump(); persistState();
       logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: c.id, targetName: `${c.number} ${c.title}`, projectId: c.projectId, detail: `constraint cleared (${by})` });

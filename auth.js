@@ -59,6 +59,9 @@ export async function seedUsers() {
 // SESSION_SECRET in the environment (Render can generate + persist one) to keep
 // the secret stable across restarts; without it a random per-boot secret is
 // used and sessions reset on restart, exactly as the old in-memory map did.
+if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 16) {
+  console.warn('⚠ SESSION_SECRET is too short (<16 chars) and is being IGNORED — sessions will reset on every restart. Set a longer value to keep users logged in.');
+}
 const SECRET = (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16)
   ? process.env.SESSION_SECRET
   : crypto.randomBytes(32).toString('hex');

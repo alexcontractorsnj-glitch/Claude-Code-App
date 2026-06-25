@@ -61,8 +61,10 @@ export function renderMessages(mount, ctx) {
 
   // Channels scoped by the global project filter.
   const channels = store.channels.filter((c) => ctx.projectId === 'all' || c.projectId === ctx.projectId);
+  const prevChannelId = view.channelId;
   if (view.channelId && !channels.some((c) => c.id === view.channelId)) view.channelId = null;
   if (!view.channelId) view.channelId = channels[0] && channels[0].id;
+  if (view.channelId !== prevChannelId) view.draft = '';   // the channel changed under us (project filter) → don't carry a draft across
   const channel = store.channel(view.channelId);
 
   const wrap = el('div', { class: 'msg-view' });
@@ -220,7 +222,13 @@ export function renderMessages(mount, ctx) {
       ta.addEventListener('input', () => { view.draft = ta.value; store.postTyping(channel.id); });
       ta.addEventListener('focus', () => { view.composerFocused = true; });
       ta.addEventListener('blur', () => { view.composerFocused = false; });
-      if (view.composerFocused) setTimeout(() => { const t = mount.querySelector('.msg-input'); if (t) { t.focus(); const n = t.value.length; t.setSelectionRange(n, n); } }, 0);
+      // Restore focus ONLY if a re-render blew it away (focus is now outside this
+      // view) — never steal it from another input the user is using (e.g. search).
+      if (view.composerFocused) setTimeout(() => {
+        if (mount.contains(document.activeElement) && document.activeElement !== document.body) return;
+        const t = mount.querySelector('.msg-input');
+        if (t) { t.focus(); const n = t.value.length; t.setSelectionRange(n, n); }
+      }, 0);
       const controls = [];
       if (supportsDictation()) {
         let dict = null;

@@ -58,6 +58,11 @@ function ring(pct, size = 56) {
 }
 
 // --- bottom sheet -----------------------------------------------------------
+// Subscriptions opened by task-sheet sections, flushed when the sheet closes so
+// they don't linger until the next store emit (and don't run on a closing sheet).
+let sheetUnsubs = [];
+function sheetSubscribe(fn) { const u = store.subscribe(fn); sheetUnsubs.push(u); return u; }
+
 function openSheet(title, buildBody) {
   closeSheet();
   const body = el('div', { class: 'sheet-body' });
@@ -75,6 +80,8 @@ function openSheet(title, buildBody) {
   requestAnimationFrame(() => back.classList.add('show'));
 }
 function closeSheet() {
+  sheetUnsubs.forEach((u) => { try { u(); } catch { /* ignore */ } });
+  sheetUnsubs = [];
   const b = root && root.querySelector('.sheet-backdrop');
   if (!b) return;
   b.classList.remove('show');
@@ -278,7 +285,7 @@ function renderTaskConstraints(body, taskId) {
     });
   };
   render();
-  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  const unsub = sheetSubscribe(() => { if (list.isConnected) render(); else unsub(); });
   if (store.canEditProject(t.projectId)) {
     const title = el('input', { class: 'cf-input', placeholder: 'Add a constraint…' });
     const type = el('select', { class: 'cf-input' }, CONSTRAINT_TYPES.map((v) => el('option', { value: v }, CONSTRAINT_TYPE_LABELS[v])));
@@ -306,7 +313,7 @@ function renderTaskIssues(body, taskId) {
     });
   };
   render();
-  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  const unsub = sheetSubscribe(() => { if (list.isConnected) render(); else unsub(); });
   if (store.canEditProject(t.projectId)) {
     const title = el('input', { class: 'cf-input', placeholder: 'Flag an issue…' });
     const sev = el('select', { class: 'cf-input' }, [['normal', 'Normal'], ['high', 'High'], ['low', 'Low']].map(([v, l]) => el('option', { value: v }, l)));
@@ -333,7 +340,7 @@ function renderTaskActivity(body, taskId) {
       ])));
     };
     renderBar();
-    const unsubBar = store.subscribe(() => { if (bar.isConnected) renderBar(); else unsubBar(); });
+    const unsubBar = sheetSubscribe(() => { if (bar.isConnected) renderBar(); else unsubBar(); });
     body.appendChild(bar);
   }
   if (supportsSpeech()) {
@@ -344,7 +351,10 @@ function renderTaskActivity(body, taskId) {
   }
   const feed = el('div', { class: 'ta-feed-m' });
   body.appendChild(feed);
-  let lastSpokenId = null;
+  // Seed with whatever's already there (incl. '' when empty) so existing history
+  // is never read aloud, but the FIRST genuinely-new dispatcher reply still is.
+  const existing = store.messagesForTask(taskId);
+  let lastSpokenId = existing.length ? existing[existing.length - 1].id : '';
   const renderFeed = () => {
     clear(feed);
     const msgs = store.messagesForTask(taskId);
@@ -364,12 +374,12 @@ function renderTaskActivity(body, taskId) {
     });
     const last = msgs[msgs.length - 1];
     if (last && last.authorId === 'dispatcher' && last.body && last.id !== lastSpokenId) {
-      if (lastSpokenId !== null && autoSpeakOn()) speak(last.body);
+      if (autoSpeakOn()) speak(last.body);
       lastSpokenId = last.id;
     }
   };
   renderFeed();
-  const unsub = store.subscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
+  const unsub = sheetSubscribe(() => { if (feed.isConnected) renderFeed(); else unsub(); });
   if (store.canPostTask(taskId)) {
     const input = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Comment, or ask the dispatcher…' });
     const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };

@@ -213,7 +213,11 @@ class MobileStore {
     if (this.local) return;            // demo mode ignores connectivity
     const was = this.online;
     this.online = v;
-    if (v && !was) { this.notify('Back online — syncing…', 'info'); this._flush(); this._refresh(); }
+    if (v && !was) {
+      this.notify('Back online — syncing…', 'info');
+      this._flush(); this._refresh();
+      this._startPolling(); this._startStream();   // idempotent: covers an offline boot that later reconnects (else no live updates)
+    }
     if (!v && was) this.notify('Offline — changes will sync when you reconnect.', 'warn');
     this._emit();
   }
@@ -629,6 +633,18 @@ class MobileStore {
   }
   _persistOutbox() { lsSet(LS_OUTBOX, this.outbox); }
 
+  // Replace a provisional create (keyed by qid) with the server echo, WITHOUT
+  // creating a duplicate when a concurrent _pull already replaced the array with
+  // server state that includes the real row. Drops the qid row if present.
+  _foldCreate(key, qid, data) {
+    const arr = (this.state[key] = this.state[key] || []);
+    const real = arr.findIndex((x) => x.id === data.id);
+    const prov = arr.findIndex((x) => x.id === qid);
+    if (real >= 0) { arr[real] = data; if (prov >= 0 && prov !== real) arr.splice(prov, 1); }
+    else if (prov >= 0) arr[prov] = data;
+    else arr.push(data);
+  }
+
   // Fold a server echo back into local state (rev bumps, real ids for creates).
   _reconcile(op, data) {
     if (!data) return;
@@ -639,26 +655,21 @@ class MobileStore {
       const p = (this.state.punch || []).find((x) => x.id === op.targetId);
       if (p) Object.assign(p, data);
     } else if (op.kind === 'punch.create') {
-      const i = (this.state.punch || []).findIndex((x) => x.id === op.qid);
-      if (i >= 0) this.state.punch[i] = data; else this.state.punch.push(data);
+      this._foldCreate('punch', op.qid, data);
     } else if (op.kind === 'report.create') {
-      const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
-      if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
+      this._foldCreate('reports', op.qid, data);
     } else if (op.kind === 'issue.create') {
-      const i = (this.state.issues || []).findIndex((x) => x.id === op.qid);
-      if (i >= 0) this.state.issues[i] = data; else this.state.issues.push(data);
+      this._foldCreate('issues', op.qid, data);
     } else if (op.kind === 'issue.patch') {
       const x = (this.state.issues || []).find((i) => i.id === op.targetId);
       if (x) Object.assign(x, data);
     } else if (op.kind === 'constraint.create') {
-      const i = (this.state.constraints || []).findIndex((x) => x.id === op.qid);
-      if (i >= 0) this.state.constraints[i] = data; else this.state.constraints.push(data);
+      this._foldCreate('constraints', op.qid, data);
     } else if (op.kind === 'constraint.patch') {
       const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
       if (x) Object.assign(x, data);
     } else if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') {
-      const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
-      if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);
+      this._foldCreate('messages', op.qid, data);
     }
   }
 }
