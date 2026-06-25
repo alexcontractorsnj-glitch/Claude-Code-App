@@ -11,7 +11,7 @@ import { searchMessages, parseMentions } from '../messaging.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../voice.js';
 import { callsSupported } from '../webrtc.js';
 
-const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0 };
+const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0, draft: '', composerFocused: false };
 
 // Inline image for a photo message.
 function photoEl(m) {
@@ -81,7 +81,7 @@ export function renderMessages(mount, ctx) {
       const un = store.unread(c.id);
       return el('div', {
         class: 'msg-chan' + (c.id === view.channelId ? ' active' : ''),
-        onclick: () => { view.channelId = c.id; store.markRead(c.id); rerender(); },
+        onclick: () => { view.channelId = c.id; view.draft = ''; store.markRead(c.id); rerender(); },
       }, [
         el('span', { class: 'msg-chan-dot', style: { background: (proj && proj.color) || '#888' } }),
         el('div', { class: 'msg-chan-meta' }, [
@@ -135,7 +135,7 @@ export function renderMessages(mount, ctx) {
       stream.appendChild(el('div', { class: 'msg-search-note' }, `${hits.length} result${hits.length === 1 ? '' : 's'} for “${view.search.trim()}”`));
       hits.slice(-200).forEach((m) => {
         const ch = store.channel(m.channelId);
-        stream.appendChild(el('div', { class: 'msg-result', onclick: () => { view.channelId = m.channelId; view.search = ''; store.markRead(m.channelId); rerender(); } }, [
+        stream.appendChild(el('div', { class: 'msg-result', onclick: () => { view.channelId = m.channelId; view.search = ''; view.draft = ''; store.markRead(m.channelId); rerender(); } }, [
           el('div', { class: 'msg-result-ch' }, ch ? ch.name : m.channelId),
           el('div', { class: 'msg-row' }, [
             el('span', { class: 'msg-avatar' }, initials(m.authorName)),
@@ -205,16 +205,22 @@ export function renderMessages(mount, ctx) {
       ]));
     } else if (canPost) {
       const ta = el('textarea', { class: 'input msg-input', rows: '1', placeholder: `Message ${channel.name}…  (@name to mention)` });
+      // This view fully re-renders on every store emit (SSE presence/typing/sync).
+      // Stash the in-progress draft + focus so an incoming message mid-typing
+      // doesn't wipe what you wrote or steal focus.
+      ta.value = view.draft || '';
       const send = () => {
         const text = ta.value.trim();
         if (!text) return;
         store.sendMessage(channel.id, text);
-        ta.value = '';
-        rerender();
+        ta.value = ''; view.draft = '';
         setTimeout(() => { const t = mount.querySelector('.msg-input'); if (t) t.focus(); }, 0);
       };
       ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-      ta.addEventListener('input', () => store.postTyping(channel.id));
+      ta.addEventListener('input', () => { view.draft = ta.value; store.postTyping(channel.id); });
+      ta.addEventListener('focus', () => { view.composerFocused = true; });
+      ta.addEventListener('blur', () => { view.composerFocused = false; });
+      if (view.composerFocused) setTimeout(() => { const t = mount.querySelector('.msg-input'); if (t) { t.focus(); const n = t.value.length; t.setSelectionRange(n, n); } }, 0);
       const controls = [];
       if (supportsDictation()) {
         let dict = null;
@@ -224,7 +230,7 @@ export function renderMessages(mount, ctx) {
         micBtn.onclick = () => {
           if (dict) { dict.stop(); dict = null; micBtn.classList.remove('on'); return; }
           const base = ta.value ? ta.value + ' ' : '';
-          dict = startDictation((final, interim) => { ta.value = base + final + interim; }, () => { dict = null; micBtn.classList.remove('on'); });
+          dict = startDictation((final, interim) => { ta.value = base + final + interim; view.draft = ta.value; }, () => { dict = null; micBtn.classList.remove('on'); });
           if (dict) micBtn.classList.add('on');
         };
         controls.push(langBtn, micBtn);

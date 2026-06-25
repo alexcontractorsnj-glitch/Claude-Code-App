@@ -566,41 +566,58 @@ function renderChat(main) {
 
 function renderConversation(main, channelId) {
   const ch = store.channel(channelId);
-  const msgs = store.messagesFor(channelId);
   main.appendChild(el('div', { class: 'cf-chat-head' }, [
     el('button', { class: 'cf-back', onclick: () => { ui.chatChannelId = null; render(); } }, '‹'),
     el('div', { class: 'cf-chat-title' }, ch.name),
   ]));
 
+  // The stream + typing line repaint in place on store emits; the composer below
+  // is built ONCE and never torn down, so the text input keeps focus while you
+  // type and live updates don't yank your scroll position (no flicker).
   const stream = el('div', { class: 'cf-chat-stream' });
-  if (!msgs.length) stream.appendChild(el('div', { class: 'cf-empty' }, 'No messages yet. Say hello.'));
-  let lastDay = null;
-  msgs.forEach((m) => {
-    const day = msgDay(m.createdAt);
-    if (day !== lastDay) { stream.appendChild(el('div', { class: 'cf-chat-day' }, day)); lastDay = day; }
-    const mine = m.authorId === store._uid();
-    const bot = m.authorId === 'dispatcher';
-    stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
-      el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
-        mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
-        m.body ? el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)) : null,
-        m.voice ? el('div', { class: 'cf-bubble-voice' }, [
-          el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
-          el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
-        ]) : null,
-        m.photo ? el('img', { class: 'cf-bubble-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
-        m.linkedTo && m.linkedTo.kind === 'task' ? el('div', { class: 'cf-taskchip' }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
-        el('div', { class: 'cf-bubble-meta' }, [
-          el('span', {}, msgTime(m.createdAt)),
-          mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
-        ]),
-      ]),
-    ]));
-  });
+  const typingSlot = el('div', { class: 'cf-typing-slot' });
   main.appendChild(stream);
+  main.appendChild(typingSlot);
 
-  const typers = store.typingIn(channelId);
-  if (typers.length) main.appendChild(el('div', { class: 'cf-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
+  const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 90;
+  const paintStream = () => {
+    const stick = nearBottom();
+    clear(stream);
+    const msgs = store.messagesFor(channelId);
+    if (!msgs.length) stream.appendChild(el('div', { class: 'cf-empty' }, 'No messages yet. Say hello.'));
+    let lastDay = null;
+    msgs.forEach((m) => {
+      const day = msgDay(m.createdAt);
+      if (day !== lastDay) { stream.appendChild(el('div', { class: 'cf-chat-day' }, day)); lastDay = day; }
+      const mine = m.authorId === store._uid();
+      const bot = m.authorId === 'dispatcher';
+      stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
+        el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (bot ? ' bot' : '') + (m._provisional ? ' pending' : '') }, [
+          mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
+          m.body ? el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)) : null,
+          m.voice ? el('div', { class: 'cf-bubble-voice' }, [
+            el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
+            el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
+          ]) : null,
+          m.photo ? el('img', { class: 'cf-bubble-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
+          m.linkedTo && m.linkedTo.kind === 'task' ? el('div', { class: 'cf-taskchip' }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
+          el('div', { class: 'cf-bubble-meta' }, [
+            el('span', {}, msgTime(m.createdAt)),
+            mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
+          ]),
+        ]),
+      ]));
+    });
+    if (stick) stream.scrollTop = stream.scrollHeight;
+    clear(typingSlot);
+    const typers = store.typingIn(channelId);
+    if (typers.length) typingSlot.appendChild(el('div', { class: 'cf-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
+    store.markRead(channelId);                 // guarded: emits at most once when there's new unread
+  };
+  paintStream();
+  stream.scrollTop = stream.scrollHeight;      // first open → jump to newest
+  // Repaint only the stream on subsequent emits; self-unsubscribe once gone.
+  const unsubChat = store.subscribe(() => { if (stream.isConnected) paintStream(); else unsubChat(); });
 
   if (store.canPost(channelId) && ui.chatRec) {
     const timeLbl = el('span', { class: 'cf-rec-time' }, '0:00');
@@ -621,7 +638,7 @@ function renderConversation(main, channelId) {
     ]));
   } else if (store.canPost(channelId)) {
     const ta = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Message…' });
-    const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; render(); };
+    const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; ta.focus(); };
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
     ta.addEventListener('input', () => store.postTyping(channelId));
     const btns = [];
@@ -645,9 +662,6 @@ function renderConversation(main, channelId) {
   } else {
     main.appendChild(el('div', { class: 'cf-chat-composer readonly' }, store.can('write') ? 'No posting access to this project' : 'Read-only role'));
   }
-
-  store.markRead(channelId);
-  setTimeout(() => { const s = main.querySelector('.cf-chat-stream'); if (s) s.scrollTop = s.scrollHeight; }, 0);
 }
 
 // --- ME tab -----------------------------------------------------------------
@@ -811,7 +825,18 @@ function renderCallUI(s) {
 function boot() {
   root = document.getElementById('cf-app');
   store.onAuth((authState) => renderShell(authState));
-  store.subscribe(() => render());
+  // While viewing a chat conversation, ambient emits (presence, typing, sync,
+  // mark-read) must NOT tear down #cf-main — that destroys the composer and
+  // scroll, causing flicker and stealing input focus. The conversation repaints
+  // its own message stream via a local subscription; here we only refresh the
+  // top bar + tab badges. Every other view still does a full render.
+  store.subscribe(() => {
+    if (built && ui.tab === 'chat' && ui.chatChannelId && document.querySelector('.cf-chat-stream')) {
+      renderBar(); renderTabBar();
+    } else {
+      render();
+    }
+  });
   store.onCall((snap) => renderCallUI(snap));
   store.onNotice((msg, tone = 'info') => {
     const stack = document.querySelector('.cf-toasts');
