@@ -174,6 +174,19 @@ try {
   ok((await http('POST', '/api/issues', { projectId: 'p2', title: 'x' })).status === 403, 'scoped PM flags other project → 403');
   await login('admin', 'admin123');
 
+  // --- Last-Planner constraints (make-ready log) ---
+  const cstr = await http('POST', '/api/constraints', { projectId: 'p1', taskId: 't9', title: 'Anchor bolt template approved', type: 'information', responsible: 'EOR', needBy: '2026-07-01' });
+  ok(cstr.status === 201 && cstr.data.number && cstr.data.status === 'open' && cstr.data.type === 'information', 'create constraint');
+  ok((await http('POST', '/api/constraints', { projectId: 'p1', title: 'bad', type: 'nope' })).data.type === 'other', 'invalid constraint type → other');
+  const cleared = await http('PATCH', '/api/constraints/' + cstr.data.id, { status: 'cleared' });
+  ok(cleared.status === 200 && cleared.data.status === 'cleared' && cleared.data.clearedBy, 'clear constraint stamps clearedBy');
+  ok((await http('GET', '/api/state')).data.constraints.some((c) => c.id === cstr.data.id && c.status === 'cleared'), 'cleared constraint persisted in state');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'constraint.update'), 'constraint.update audited');
+  ok((await http('DELETE', '/api/constraints/' + cstr.data.id)).status === 204, 'delete constraint');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/constraints', { projectId: 'p1', title: 'x' })).status === 403, 'viewer cannot log a constraint → 403');
+  await login('admin', 'admin123');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

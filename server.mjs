@@ -26,6 +26,7 @@ import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } fro
 import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
 import { makeDelivery, deliverySummary, DELIVERY_STATUSES } from './src/js/deliveries.js';
 import { makeIssue, ISSUE_SEVERITIES, ISSUE_STATUSES } from './src/js/issues.js';
+import { makeConstraint, CONSTRAINT_TYPES, CONSTRAINT_STATUSES } from './src/js/constraints.js';
 import { analyzeField, fallbackBrief, dispatcherSystem, mentionsDispatcher, DISPATCHER, DISPATCHER_TOOLS } from './src/js/dispatcher.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
@@ -293,6 +294,14 @@ function execDispatcherTool(name, input, actor) {
       state.punch.push(p); bump(); persistState();
       logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: p.id, targetName: `${p.number} ${p.title}`, projectId: p.projectId, detail: `punch via ${by}` });
       return { ok: true, punch: p.id, number: p.number };
+    }
+    if (name === 'clear_constraint') {
+      const c = (state.constraints || []).find((x) => x.id === input.constraintId);
+      if (!c) return { ok: false, error: 'constraint not found' };
+      c.status = 'cleared'; c.clearedBy = DISPATCHER.name; c.clearedAt = new Date().toISOString(); c.rev = (c.rev || 1) + 1;
+      bump(); persistState();
+      logAudit(DISPATCHER_ACTOR, 'dispatcher.action', { targetId: c.id, targetName: `${c.number} ${c.title}`, projectId: c.projectId, detail: `constraint cleared (${by})` });
+      return { ok: true, constraint: c.id, status: c.status };
     }
     return { ok: false, error: 'unknown tool' };
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
@@ -906,6 +915,43 @@ async function handleApi(req, res, urlPath) {
         state.issues = state.issues.filter((x) => x.id !== id);
         bump(); await persistState();
         logAudit(actor, 'issue.delete', { targetName: `${iss.number} ${iss.title}`, projectId: iss.projectId });
+        res.writeHead(204, { ETag: etag() }); return res.end();
+      }
+    }
+
+    if (resource === 'constraints') {
+      if (!Array.isArray(state.constraints)) state.constraints = [];
+      if (method === 'POST' && !id) {                 // log a constraint
+        const body = await readBody(req);
+        if (!canEditProject(actor, body.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const cstr = makeConstraint(state.constraints, { ...body, createdBy: actor.name, createdAt: new Date().toISOString() });
+        state.constraints.push(cstr);
+        bump(); await persistState();
+        logAudit(actor, 'constraint.create', { targetId: cstr.id, targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId, detail: cstr.type });
+        return send(res, 201, cstr, { ETag: etag() });
+      }
+      if (method === 'PATCH' && id) {
+        const cstr = state.constraints.find((x) => x.id === id);
+        if (!cstr) return send(res, 404, { error: 'constraint not found' });
+        if (!canEditProject(actor, cstr.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        const body = await readBody(req);
+        ['title', 'type', 'responsible', 'needBy', 'status', 'notes'].forEach((k) => { if (body[k] !== undefined) cstr[k] = body[k]; });
+        if (!CONSTRAINT_TYPES.includes(cstr.type)) cstr.type = 'other';
+        if (!CONSTRAINT_STATUSES.includes(cstr.status)) cstr.status = 'open';
+        if (cstr.status === 'cleared' && !cstr.clearedAt) { cstr.clearedBy = actor.name; cstr.clearedAt = new Date().toISOString(); }
+        if (cstr.status === 'open') { cstr.clearedBy = null; cstr.clearedAt = null; }
+        cstr.rev = (cstr.rev || 1) + 1;
+        bump(); await persistState();
+        logAudit(actor, 'constraint.update', { targetId: cstr.id, targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId, detail: `status ${cstr.status}` });
+        return send(res, 200, cstr, { ETag: etag() });
+      }
+      if (method === 'DELETE' && id) {
+        const cstr = state.constraints.find((x) => x.id === id);
+        if (!cstr) return send(res, 404, { error: 'constraint not found' });
+        if (!canEditProject(actor, cstr.projectId)) return send(res, 403, { error: 'you do not have access to that project' });
+        state.constraints = state.constraints.filter((x) => x.id !== id);
+        bump(); await persistState();
+        logAudit(actor, 'constraint.delete', { targetName: `${cstr.number} ${cstr.title}`, projectId: cstr.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
     }

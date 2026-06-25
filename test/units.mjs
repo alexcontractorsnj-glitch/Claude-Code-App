@@ -197,8 +197,10 @@ const findings = analyzeField(seed);
 ok(findings.some((f) => f.kind === 'delivery-late' && f.channelId === channelIdForProject('p1')), 'dispatcher flags late delivery → project channel');
 ok(findings.every((f) => f.key && f.channelId && f.severity), 'findings carry key/channel/severity');
 ok(findings.length === new Set(findings.map((f) => f.key)).size, 'finding keys are unique (dedupe-able)');
+ok(findings.some((f) => f.kind === 'constraint-overdue' && f.severity === 'high'), 'dispatcher flags overdue constraint');
 const brief = fallbackBrief(seed, 'p1');
 ok(/Deliveries:/.test(brief) && brief.length > 20, 'fallbackBrief produces a digest');
+ok(/Constraints:/.test(brief) && /made ready/.test(brief), 'fallbackBrief includes constraint + % made ready line');
 ok(mentionsDispatcher('hey @dispatcher whats up') && mentionsDispatcher('dispatcher: status?') && !mentionsDispatcher('no mention here'), 'mentionsDispatcher');
 ok(DISPATCHER.id === 'dispatcher', 'dispatcher identity');
 
@@ -226,6 +228,28 @@ ok(issuesForTask(il, 't4').length === 2, 'issuesForTask filters');
 const isum = issueSummary(il, 'p1');
 ok(isum.total === 3 && isum.open === 2 && isum.highOpen === 1, 'issueSummary counts');
 ok(isOpenIssue(il[0]) && !isOpenIssue(il[1]), 'isOpenIssue');
+
+section('last-planner constraints');
+const { makeConstraint, constraintsForTask, constraintSummary, madeReady, constraintOverdue, constraintDueSoon, isOpenConstraint } = await import('../src/js/constraints.js');
+ok(seed.constraints.length === 9 && seed.constraints[0].number === 'C-001', 'seed has 9 numbered constraints');
+ok(makeConstraint([], { projectId: 'p1', type: 'bogus' }).type === 'other', 'constraint invalid type → other');
+const cl = [
+  makeConstraint([], { projectId: 'p1', taskId: 't7', type: 'information', needBy: Dates.addDays(Dates.today(), -2) }), // open + overdue
+  null, null,
+];
+cl[1] = makeConstraint(cl.filter(Boolean), { projectId: 'p1', taskId: 't7', status: 'cleared' });
+cl[2] = makeConstraint(cl.filter(Boolean), { projectId: 'p1', taskId: 't8', status: 'cleared' });   // t8 fully cleared
+ok(cl[0].id === 'cn1' && cl[1].number === 'C-002', 'constraint ids/numbers increment');
+ok(constraintsForTask(cl, 't7').length === 2, 'constraintsForTask filters');
+ok(constraintOverdue(cl[0]) && !constraintOverdue(cl[1]), 'constraintOverdue (open + past need-by)');
+ok(constraintDueSoon(makeConstraint([], { projectId: 'p1', needBy: Dates.addDays(Dates.today(), 3) })), 'constraintDueSoon within lookahead');
+ok(!constraintDueSoon(cl[1]), 'cleared constraint is not due-soon');
+const csum = constraintSummary(cl, 'p1');
+ok(csum.total === 3 && csum.open === 1 && csum.cleared === 2 && csum.overdue === 1, 'constraintSummary counts');
+const mr = madeReady(cl, 'p1');
+ok(mr.tasks === 2 && mr.ready === 1 && mr.percent === 50, 'madeReady: t8 ready, t7 blocked → 50%');
+ok(madeReady([], 'p1').percent === null, 'madeReady null when no constraints');
+ok(isOpenConstraint(cl[0]) && !isOpenConstraint(cl[1]), 'isOpenConstraint');
 
 section('dictation language (EN/ES)');
 const voiceMod = await import('../src/js/voice.js');

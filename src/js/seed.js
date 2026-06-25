@@ -10,6 +10,7 @@ export const SCHEMA_VERSION = 1;
 import { seedChannels, makeMessage, channelIdForProject } from './messaging.js';
 import { makeDelivery } from './deliveries.js';
 import { makeIssue } from './issues.js';
+import { makeConstraint } from './constraints.js';
 
 // --- Construction trades (drives color + grouping) --------------------------
 export const TRADES = {
@@ -217,6 +218,28 @@ export function seedState() {
   iss('p1', 't5', 'Form ties missing along north foundation wall', 'normal');
   iss('p3', 't23', 'Existing conduit conflicts with new MEP routing', 'high');
 
+  // --- Seed Last-Planner constraints (lookahead "can it be made ready?") -----
+  const constraints = [];
+  const cn = (projectId, taskId, title, type, responsible, needByOffset, status) =>
+    constraints.push(makeConstraint(constraints, {
+      projectId, taskId, title, type, responsible,
+      needBy: needByOffset == null ? null : Dates.addDays(t0i, needByOffset),
+      status, createdBy: 'Planning', createdAt: Dates.addDays(t0i, -6),
+      ...(status === 'cleared' ? { clearedBy: 'A. Whitfield', clearedAt: Dates.addDays(t0i, -2) } : {}),
+    }));
+  // p1 steel erection (t7): info + material constraints, one already cleared
+  cn('p1', 't7', 'Steel shop drawings approved', 'information', 'Architect', 4, 'open');
+  cn('p1', 't7', 'Sequence-A steel delivered to site', 'material', 'Summit Mill', 6, 'open');
+  cn('p1', 't5', 'Foundation rebar inspection signed off', 'prerequisite', 'Building Dept.', -1, 'open'); // OVERDUE
+  cn('p1', 't4', 'Footing RFI-001 (rebar conflict) answered', 'information', 'Structural Engineer', -2, 'open'); // OVERDUE
+  cn('p1', 't4', 'Concrete pump truck booked', 'equipment', 'Riverside Concrete', 1, 'cleared');
+  // p2 tilt-up (t16): all cleared → this task is "made ready"
+  cn('p2', 't16', 'Embed plates delivered & staged', 'material', 'Dayton Superior', 0, 'cleared');
+  cn('p2', 't16', 'Casting beds prepped', 'prerequisite', 'M. Rodriguez', -1, 'cleared');
+  // p3 MEP rough-in (t23): blocked on RFI + access
+  cn('p3', 't23', 'Chase-2 routing RFI answered', 'information', 'MEP Engineer', -3, 'open'); // OVERDUE
+  cn('p3', 't23', 'Chase 2 cleared for access', 'access', 'Demolition crew', 2, 'open');
+
   // --- Seed team-messaging: one channel per project + a little chatter -------
   const channels = seedChannels(projects);
   const messages = [];
@@ -232,7 +255,7 @@ export function seedState() {
   say('p3', 'psandoval', 'P. Sandoval', 'Civic: MEP rough-in still blocked on the chase-2 RFI. Chasing the engineer today.', 9);
   // `baseline` is the ACTIVE baseline (variance compares against it); `baselines`
   // is the full history. They share the same object reference for the active one.
-  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, punch, deliveries, issues, channels, messages, reads: {}, dispatcher: { posted: {} }, version: SCHEMA_VERSION, rev: 1 };
+  return { projects, tasks, crews, baseline, baselines: [baseline], payApps: [], docs, changeOrders, reports, punch, deliveries, issues, constraints, channels, messages, reads: {}, dispatcher: { posted: {} }, version: SCHEMA_VERSION, rev: 1 };
 }
 
 // Next baseline id for a state (b1, b2, …).
@@ -295,6 +318,7 @@ export function normalizeState(state) {
   if (!Array.isArray(state.messages)) state.messages = [];
   if (!Array.isArray(state.deliveries)) state.deliveries = [];
   if (!Array.isArray(state.issues)) state.issues = [];
+  if (!Array.isArray(state.constraints)) state.constraints = [];
   if (!state.reads || typeof state.reads !== 'object') state.reads = {};
   if (!state.dispatcher || typeof state.dispatcher !== 'object') state.dispatcher = { posted: {} };
   if (!state.dispatcher.posted) state.dispatcher.posted = {};

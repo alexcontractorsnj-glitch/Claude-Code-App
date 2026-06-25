@@ -16,6 +16,7 @@ import { WEATHER } from '../src/js/fieldreports.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../src/js/voice.js';
 import { callsSupported } from '../src/js/webrtc.js';
 import { capturePhoto, supportsPhotos } from '../src/js/media.js';
+import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from '../src/js/constraints.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -232,9 +233,45 @@ function openTaskSheet(id) {
     } else {
       body.appendChild(el('div', { class: 'sheet-note' }, t.milestone ? 'Milestone marker — tracked, not crew-editable.' : 'Read-only — you don’t have edit access to this project.'));
     }
+    renderTaskConstraints(body, id);
     renderTaskIssues(body, id);
     renderTaskActivity(body, id);
   });
+}
+
+// Last-Planner make-ready constraints on a task (add + clear).
+function renderTaskConstraints(body, taskId) {
+  const t = store.task(taskId);
+  const head = el('div', { class: 'sheet-label' }, '🚧 Make-Ready');
+  const badge = el('span', { class: 'mr-badge-m' });
+  head.appendChild(badge);
+  body.appendChild(head);
+  const list = el('div', { class: 'cn-list-m' });
+  body.appendChild(list);
+  const render = () => {
+    clear(list);
+    const cs = store.constraintsForTask(taskId);
+    const open = cs.filter((c) => c.status === 'open').length;
+    badge.textContent = cs.length ? (open === 0 ? ' ✅ ready' : ` ${open} open`) : '';
+    badge.className = 'mr-badge-m' + (cs.length && open === 0 ? ' ready' : open ? ' blocked' : '');
+    if (!cs.length) { list.appendChild(el('div', { class: 'ta-empty-m' }, 'No constraints — clear to build.')); return; }
+    cs.forEach((c) => {
+      const overdue = constraintOverdue(c);
+      list.appendChild(el('div', { class: 'cn-row-m type-' + c.type + (c.status === 'cleared' ? ' cleared' : '') + (overdue ? ' overdue' : '') }, [
+        el('div', { class: 'cn-title-m' }, `${c.number} ${c.title}`),
+        el('div', { class: 'cn-meta-m' }, `${CONSTRAINT_TYPE_LABELS[c.type] || c.type}${c.responsible ? ' · ' + c.responsible : ''}${c.needBy ? ' · ' + Dates.fmt(c.needBy) : ''}${c.status === 'cleared' ? ' · cleared' : overdue ? ' · OVERDUE' : ''}`),
+        (c.status === 'open' && store.canEditProject(c.projectId)) ? el('button', { class: 'qbtn', onclick: () => { store.clearConstraint(c.id); render(); } }, 'Clear') : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'cf-input', placeholder: 'Add a constraint…' });
+    const type = el('select', { class: 'cf-input' }, CONSTRAINT_TYPES.map((v) => el('option', { value: v }, CONSTRAINT_TYPE_LABELS[v])));
+    const add = () => { const v = title.value.trim(); if (!v) return; store.createConstraint({ projectId: t.projectId, taskId, title: v, type: type.value }); title.value = ''; render(); };
+    body.appendChild(el('div', { class: 'cn-composer-m' }, [title, type, el('button', { class: 'cf-chat-send', onclick: add }, '+')]));
+  }
 }
 
 // Field issues raised on a task (flag + resolve; promotion is an office action).

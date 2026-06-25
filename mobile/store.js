@@ -14,6 +14,7 @@ import {
   messagesForChannel, lastMessage, channelIdForProject, messagesForTask,
 } from '../src/js/messaging.js';
 import { makeIssue, issuesForTask } from '../src/js/issues.js';
+import { makeConstraint, constraintsForTask, constraintSummary, madeReady } from '../src/js/constraints.js';
 import { CallManager } from '../src/js/webrtc.js';
 import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
@@ -418,6 +419,21 @@ class MobileStore {
     this._queueWrite({ kind: 'issue.patch', targetId: id, method: 'PATCH', path: '/issues/' + id, body: { status: 'resolved' } });
   }
 
+  // ---- Last-Planner constraints (make-ready) ----
+  get constraints() { return this.state.constraints || []; }
+  constraintsForTask(taskId) { return constraintsForTask(this.constraints, taskId); }
+  constraintSummary(projectId) { return constraintSummary(this.constraints, projectId); }
+  madeReady(projectId) { return madeReady(this.constraints, projectId); }
+  createConstraint(partial) {
+    if (!this.canEditProject(partial.projectId)) { this.notify('You don’t have access to that project.', 'warn'); return; }
+    this._queueWrite({ kind: 'constraint.create', method: 'POST', path: '/constraints', body: partial });
+  }
+  clearConstraint(id) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (!c || !this.canEditProject(c.projectId)) return;
+    this._queueWrite({ kind: 'constraint.patch', targetId: id, method: 'PATCH', path: '/constraints/' + id, body: { status: 'cleared' } });
+  }
+
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
     const at = new Date().toISOString();
@@ -493,6 +509,12 @@ class MobileStore {
     } else if (op.kind === 'issue.patch') {
       const x = (this.state.issues || []).find((i) => i.id === op.targetId);
       if (x) Object.assign(x, op.body, { resolvedBy: this.user, resolvedAt: new Date().toISOString() });
+    } else if (op.kind === 'constraint.create') {
+      if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+      this.state.constraints.push(makeConstraint(this.state.constraints, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
+      if (x) Object.assign(x, op.body, { clearedBy: this.user, clearedAt: new Date().toISOString() });
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null }));
@@ -529,6 +551,12 @@ class MobileStore {
       this.state.issues.push({ id: op.qid, number: '…', status: 'open', severity: 'normal', _provisional: true, ...op.body });
     } else if (op.kind === 'issue.patch') {
       const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, op.body);
+    } else if (op.kind === 'constraint.create') {
+      if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+      this.state.constraints.push({ id: op.qid, number: '…', status: 'open', type: 'other', _provisional: true, ...op.body });
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
       if (x) Object.assign(x, op.body);
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
@@ -608,6 +636,12 @@ class MobileStore {
       if (i >= 0) this.state.issues[i] = data; else this.state.issues.push(data);
     } else if (op.kind === 'issue.patch') {
       const x = (this.state.issues || []).find((i) => i.id === op.targetId);
+      if (x) Object.assign(x, data);
+    } else if (op.kind === 'constraint.create') {
+      const i = (this.state.constraints || []).findIndex((x) => x.id === op.qid);
+      if (i >= 0) this.state.constraints[i] = data; else this.state.constraints.push(data);
+    } else if (op.kind === 'constraint.patch') {
+      const x = (this.state.constraints || []).find((c) => c.id === op.targetId);
       if (x) Object.assign(x, data);
     } else if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') {
       const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);

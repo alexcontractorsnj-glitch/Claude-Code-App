@@ -24,6 +24,7 @@ import {
 } from './messaging.js';
 import { makeDelivery, deliveriesFor, deliverySummary } from './deliveries.js';
 import { makeIssue, issuesForTask, issueSummary } from './issues.js';
+import { makeConstraint, constraintsForTask, constraintsForProject, constraintSummary, madeReady } from './constraints.js';
 import { CallManager } from './webrtc.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
@@ -909,6 +910,39 @@ class Store {
     this.state.issues = this.issues.filter((x) => x.id !== id);
     this._emit();
     if (this.mode === 'remote') api('DELETE', '/issues/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+
+  // ---- Last-Planner constraints (make-ready log + % Made Ready) ----
+  get constraints() { return this.state.constraints || []; }
+  constraintsForTask(taskId) { return constraintsForTask(this.constraints, taskId); }
+  constraintsForProject(projectId) { return constraintsForProject(this.constraints, projectId); }
+  constraintSummary(projectId) { return constraintSummary(this.constraints, projectId); }
+  madeReady(projectId) { return madeReady(this.constraints, projectId); }
+
+  async createConstraint(partial) {
+    if (!this.canEditProject(partial.projectId)) { this._notify('You don’t have access to that project.', 'warn'); return null; }
+    if (!Array.isArray(this.state.constraints)) this.state.constraints = [];
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try { const { data, etag } = await api('POST', '/constraints', partial); this.rev = revOf(etag) ?? this.rev; this.state.constraints.push(data); this._emit(); return data; }
+      catch (e) { this._writeFailed(e); return null; } finally { this._setSyncing(false); }
+    }
+    const c = makeConstraint(this.state.constraints, { ...partial, createdBy: this.user, createdAt: new Date().toISOString() });
+    this.state.constraints.push(c); this._emit(); return c;
+  }
+  updateConstraint(id, patch) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (!c || !this._guardProject(c.projectId)) return;
+    Object.assign(c, patch);
+    this._emit();
+    if (this.mode === 'remote') api('PATCH', '/constraints/' + id, patch).then(({ data, etag }) => { if (data) Object.assign(c, data); this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
+  }
+  deleteConstraint(id) {
+    const c = this.constraints.find((x) => x.id === id);
+    if (c && !this._guardProject(c.projectId)) return;
+    this.state.constraints = this.constraints.filter((x) => x.id !== id);
+    this._emit();
+    if (this.mode === 'remote') api('DELETE', '/constraints/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch((e) => this._writeFailed(e));
   }
 
   deleteTask(id) {

@@ -15,6 +15,7 @@ import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
 import { renderDeliveries } from './views/deliveries.js';
+import { renderConstraints } from './views/constraints.js';
 import { renderPhotos } from './views/photos.js';
 import { renderMessages } from './views/messages.js';
 import { renderTestimonials } from './views/testimonials.js';
@@ -22,6 +23,7 @@ import { DOC_KINDS } from './docs.js';
 import { CO_STATUSES } from './changeorders.js';
 import { WEATHER } from './fieldreports.js';
 import { PUNCH_STATUSES, PUNCH_PRIORITIES } from './punch.js';
+import { CONSTRAINT_TYPES, CONSTRAINT_TYPE_LABELS, constraintOverdue } from './constraints.js';
 import { scheduleVariance, taskVariance, compareBaselines } from './variance.js';
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
@@ -70,6 +72,7 @@ const VIEWS = {
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
   deliveries: { label: 'Deliveries', icon: '🚚', render: renderDeliveries },
+  constraints: { label: 'Make-Ready', icon: '🚧', render: renderConstraints },
   photos: { label: 'Photos', icon: '📷', render: renderPhotos },
   messages: { label: 'Messages', icon: '💬', render: renderMessages },
   testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
@@ -472,6 +475,50 @@ function taskIssuesSection(taskId) {
   return wrap;
 }
 
+function taskConstraintsSection(taskId) {
+  const t = store.task(taskId);
+  const wrap = el('div', { class: 'task-constraints' });
+  const head = el('div', { class: 'ta-head' }, [el('span', {}, '🚧 Constraints')]);
+  const badge = el('span', { class: 'mr-badge' });
+  head.appendChild(badge);
+  wrap.appendChild(head);
+  const list = el('div', { class: 'cn-list' });
+  wrap.appendChild(list);
+  const render = () => {
+    clear(list);
+    const cs = store.constraintsForTask(taskId);
+    const open = cs.filter((c) => c.status === 'open').length;
+    badge.textContent = cs.length ? (open === 0 ? '✅ made ready' : `${open} open`) : '';
+    badge.className = 'mr-badge' + (cs.length && open === 0 ? ' ready' : open ? ' blocked' : '');
+    if (!cs.length) { list.appendChild(el('div', { class: 'ta-empty' }, 'No constraints — nothing blocking this task from being made ready.')); return; }
+    cs.forEach((c) => {
+      const canEdit = store.canEditProject(c.projectId);
+      const overdue = constraintOverdue(c);
+      list.appendChild(el('div', { class: 'cn-row type-' + c.type + (c.status === 'cleared' ? ' cleared' : '') + (overdue ? ' overdue' : '') }, [
+        el('div', { class: 'cn-main' }, [
+          el('div', { class: 'cn-title' }, `${c.number}  ${c.title}`),
+          el('div', { class: 'cn-meta' }, `${CONSTRAINT_TYPE_LABELS[c.type] || c.type}${c.responsible ? ' · ' + c.responsible : ''}${c.needBy ? ' · need-by ' + Dates.fmt(c.needBy) : ''}${c.status === 'cleared' ? ' · cleared' : overdue ? ' · OVERDUE' : ''}`),
+        ]),
+        (canEdit && c.status === 'open') ? el('div', { class: 'cn-actions' }, [
+          el('button', { class: 'btn sm', title: 'Mark this constraint cleared', onclick: () => { store.updateConstraint(c.id, { status: 'cleared' }); render(); } }, '✓ Clear'),
+        ]) : null,
+      ]));
+    });
+  };
+  render();
+  const unsub = store.subscribe(() => { if (list.isConnected) render(); else unsub(); });
+  if (store.canEditProject(t.projectId)) {
+    const title = el('input', { class: 'input', placeholder: 'Add a constraint blocking this task…' });
+    const type = el('select', { class: 'select' }, CONSTRAINT_TYPES.map((v) => el('option', { value: v }, CONSTRAINT_TYPE_LABELS[v])));
+    const who = el('input', { class: 'input', placeholder: 'Responsible party' });
+    const needBy = el('input', { class: 'input', type: 'date' });
+    const add = () => { const v = title.value.trim(); if (!v) return; store.createConstraint({ projectId: t.projectId, taskId, title: v, type: type.value, responsible: who.value.trim(), needBy: needBy.value || null }); title.value = ''; who.value = ''; needBy.value = ''; render(); };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    wrap.appendChild(el('div', { class: 'cn-composer' }, [title, el('div', { class: 'cn-composer-row' }, [type, who, needBy, el('button', { class: 'btn primary sm', onclick: add }, '+ Add')])]));
+  }
+  return wrap;
+}
+
 // --- Task editor modal ------------------------------------------------------
 function openEditor(taskId) {
   const isNew = taskId == null;
@@ -553,6 +600,7 @@ function openEditor(taskId) {
       field('Depends on (finish-to-start)', f.deps),
       el('label', { class: 'check-row' }, [f.milestone, el('span', {}, 'This is a milestone (zero-duration marker)')]),
       !isNew ? metaPanel(t) : null,
+      !isNew ? taskConstraintsSection(taskId) : null,
       !isNew ? taskIssuesSection(taskId) : null,
       !isNew ? taskActivitySection(taskId) : null,
       (!isNew && store.mode === 'remote') ? historySection(taskId) : null,

@@ -329,3 +329,17 @@ textarea.cf-input { resize: vertical; }
 .iss-row-m .qbtn { position: absolute; right: 10px; top: 9px; width: auto; padding: 5px 10px; flex: none; }
 .iss-composer-m { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .iss-composer-m .cf-input:first-child { flex: 1; }
+
+/* --- Last-Planner constraints (make-ready) --- */
+.cn-list-m { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.cn-row-m { padding: 9px 11px; background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 9px; position: relative; }
+.cn-row-m.overdue { border-left-color: var(--red); }
+.cn-row-m.cleared { opacity: .55; }
+.cn-title-m { font-weight: 600; font-size: 14px; padding-right: 56px; }
+.cn-meta-m { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.cn-row-m .qbtn { position: absolute; right: 10px; top: 9px; width: auto; padding: 5px 10px; flex: none; }
+.cn-composer-m { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.cn-composer-m .cf-input:first-child { flex: 1; }
+.mr-badge-m { font-size: 11px; font-weight: 700; }
+.mr-badge-m.ready { color: #2e9e5b; }
+.mr-badge-m.blocked { color: var(--red); }

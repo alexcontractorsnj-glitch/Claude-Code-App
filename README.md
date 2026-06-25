@@ -112,8 +112,21 @@ resolved status. Issues are **promotable** — one tap turns a flagged issue int
 **punch item** or an **RFI** (auto-resolving the issue and stamping `promotedTo`),
 so a quick field note flows straight into the formal closeout/QA process without
 re-keying. Open high-severity issues feed the **AI dispatcher** so they surface
-alongside late deliveries and blocked tasks. (Phases A–B of the task-comms plan;
-full Last-Planner constraints are the next phase.)
+alongside late deliveries and blocked tasks.
+
+**🚧 Make-Ready — Last-Planner constraints (on the task).** Before a task is
+released to the field it has to be *made ready* — every constraint blocking it
+removed. Each task carries a **constraint log**: a thing that must be in place
+first (material · information/RFI · labor · equipment · prerequisite work ·
+permit/approval · access · safety), owned by a **responsible party**, with a
+**need-by** date, tracked **open → cleared**. The **Make-Ready** view rolls the
+whole program up behind the headline **% Made Ready** KPI — the share of
+constrained tasks that have been fully de-constrained — with overdue constraints
+flagged in red. The **AI dispatcher** watches open constraints exactly like it
+watches deliveries: a constraint past its need-by becomes a high-severity alert
+in the project channel, and the dispatcher can **clear a constraint** once it's
+resolved (`clear_constraint` tool). One source of truth, planned upstream on the
+task and rolled up for the PM. (Phases A–C of the task-comms plan.)
 
 **📞 Voice & video calls.** Tap an online teammate (in the monitor's *People
 online* list, or Corefield's Chat tab) to start a **1:1 audio or video call** —
@@ -141,11 +154,14 @@ interact with it right where they already talk.
 - **Conversational + action-taking:** `@dispatcher` in any channel and it
   replies. With a Claude API key it runs a **tool-use agent** that can read
   status and take **real, audited actions** — reschedule a task, change a task
-  status, update a delivery, or open a punch item — attributed to the dispatcher
-  on behalf of the asker.
+  status, update a delivery, open a punch item, or **clear a make-ready
+  constraint** — attributed to the dispatcher on behalf of the asker.
 - **Deliveries** are a first-class entity (`src/js/deliveries.js`): item,
   supplier, due date, status, and the task they feed. Managed from the
   **🚚 Deliveries** view; the dispatcher's late/due-soon logic runs off them.
+- **Constraints** (`src/js/constraints.js`) are watched the same way: an open
+  Last-Planner constraint past its **need-by** date becomes a high-severity
+  alert, so the make-ready log and the dispatcher reinforce each other.
 
 **Wiring the key (optional but recommended):** copy `.env.example` to `.env` and
 set `ANTHROPIC_API_KEY` (the server auto-loads `.env`, which is gitignored).
@@ -221,6 +237,7 @@ views changes.
 | `POST/PATCH/DELETE /api/punch/:id?` | punch-list item CRUD |
 | `POST /api/photos`, `GET /api/photos/:id` | field-photo blob store (by reference, capped, out of `/api/state`) |
 | `POST/PATCH/DELETE /api/issues/:id?`, `POST /api/issues/:id/promote` | field issue flags + promote to punch/RFI |
+| `POST/PATCH/DELETE /api/constraints/:id?` | Last-Planner make-ready constraints (open → cleared) |
 
 All `/api` routes except `auth/*` require a valid session; writes require `pm`+,
 task writes are checked against the caller's **project scope**, baselines need
@@ -523,10 +540,13 @@ zero total float are flagged), not hard-coded.
 - Email/webhook delivery for the alert center
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
-- Full Last-Planner constraint log (% Made Ready) — the next task-comms phase
+- A "call about this task" button (pre-targeted) + AI call/voice summaries posted back
 
-**Done recently:** ✅ **Field capture on the task** — photos (camera/file →
-client-side JPEG → blob store) and **issue flags** that promote to punch/RFI ·
+**Done recently:** ✅ **Make-Ready constraints** — Last-Planner constraint log on
+every task (open → cleared, responsible party + need-by), a **% Made Ready** KPI
+view, and the dispatcher watching overdue constraints · ✅ **Field capture on the
+task** — photos (camera/file → client-side JPEG → blob store) and **issue flags**
+that promote to punch/RFI ·
 ✅ **Task Activity** (comments + voice notes on the work item, synced to the
 project channel) · ✅ **Voice/video calls** (1:1 WebRTC over the SSE signaling
 channel, STUN) · ✅ **Real-time SSE** (instant delivery + presence + typing) ·
