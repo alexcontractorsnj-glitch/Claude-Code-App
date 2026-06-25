@@ -82,6 +82,9 @@ class Store {
     this.role = null;             // server role when authenticated
     this.scope = [];              // project scope ([] = all / unrestricted)
     this.user = this._loadUser(); // display name (local identity, or session user)
+    this.onlineUsers = new Set(); // usernames currently connected (SSE presence)
+    this.typing = {};             // { channelId: { name: expiryMs } }
+    this._es = null;              // EventSource (live stream)
     this.state = normalizeState(this._loadLocal());
     this._boot();                 // detect auth, then hydrate if allowed
   }
@@ -137,6 +140,7 @@ class Store {
   async logout() {
     try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.role = null;
     this.authState = 'required';
     this._emitAuth();
@@ -217,6 +221,7 @@ class Store {
       this._cacheLocal(this.state);
       this.listeners.forEach((fn) => fn(this.state));
       this._startPolling();
+      this._startStream();
     }
     this._emitStatus();
   }
@@ -224,11 +229,67 @@ class Store {
   // Session expired (or revoked) mid-session → bounce to the login screen.
   _sessionLost() {
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.role = null;
     this.authState = 'required';
     this._setSyncing(false);
     this._emitAuth();
   }
+
+  // --- Live stream (SSE): instant updates + presence + typing ---------------
+  // A tiny `sync` signal triggers a conditional re-pull; polling stays as a
+  // fallback (and mostly returns 304 once the stream is live).
+  _startStream() {
+    if (this._es || typeof EventSource === 'undefined') return;
+    try { this._es = new EventSource(API + '/stream'); } catch { return; }
+    this._es.addEventListener('sync', (e) => { try { if (JSON.parse(e.data).rev !== this.rev) this._pull(); } catch { /* ignore */ } });
+    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = new Set(JSON.parse(e.data).online || []); this.listeners.forEach((fn) => fn(this.state)); } catch { /* ignore */ } });
+    this._es.addEventListener('typing', (e) => { try { const d = JSON.parse(e.data); if (d.user !== this.username) this._setTyping(d.channelId, d.name); } catch { /* ignore */ } });
+    this._es.onerror = () => { /* EventSource auto-reconnects; polling covers gaps */ };
+  }
+  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = new Set(); }
+
+  _pull() {
+    if (this._pulling || this.mode !== 'remote') return;
+    this._pulling = true;
+    api('GET', '/state', null, this.rev != null ? { 'If-None-Match': '"' + this.rev + '"' } : {})
+      .then(({ status, data, etag }) => {
+        if (status === 304) return;
+        const newRev = revOf(etag) ?? (data && data.rev);
+        if (data && data.tasks && newRev !== this.rev) {
+          this.state = normalizeState(data); this.rev = newRev; this._cacheLocal(this.state);
+          this.listeners.forEach((fn) => fn(this.state));
+        }
+      })
+      .catch((e) => { if (e && e.status === 401) this._sessionLost(); })
+      .finally(() => { this._pulling = false; });
+  }
+
+  // Typing presence (4s TTL per typer), driven by relayed `typing` events.
+  _setTyping(channelId, name) {
+    this.typing[channelId] = this.typing[channelId] || {};
+    this.typing[channelId][name] = Date.now() + 4000;
+    this.listeners.forEach((fn) => fn(this.state));
+    clearTimeout(this._typingT);
+    this._typingT = setTimeout(() => this._pruneTyping(), 4200);
+  }
+  _pruneTyping() {
+    const now = Date.now(); let changed = false;
+    for (const c of Object.keys(this.typing)) for (const n of Object.keys(this.typing[c])) if (this.typing[c][n] <= now) { delete this.typing[c][n]; changed = true; }
+    if (changed) this.listeners.forEach((fn) => fn(this.state));
+  }
+  typingIn(channelId) {
+    const m = this.typing[channelId]; if (!m) return [];
+    const now = Date.now();
+    return Object.keys(m).filter((n) => m[n] > now && n !== this.user);
+  }
+  postTyping(channelId) {
+    const now = Date.now();
+    if (this._lastTyping && now - this._lastTyping < 2000) return;     // throttle
+    this._lastTyping = now;
+    if (this.mode === 'remote') api('POST', '/channels/' + channelId + '/typing').catch(() => {});
+  }
+  onlineCount() { return this.onlineUsers.size; }
 
   // Poll the server; only re-hydrate when the global rev advances past ours
   // (i.e. another client wrote). Cheap: 304 Not Modified when nothing changed.

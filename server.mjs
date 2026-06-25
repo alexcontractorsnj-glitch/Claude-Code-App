@@ -74,6 +74,7 @@ let state;
 let users;                                    // [{ username, name, role, projects, passwordHash }]
 let audit = [];                               // append-only activity log (capped)
 let voice = {};                               // { id: { mime, data(base64), dur, by, at } } — audio blobs, kept out of /api/state
+let sse = new Set();                          // open Server-Sent-Events streams: { res, user }
 let writeChain = Promise.resolve();           // serialize writes
 
 async function loadState() {
@@ -138,8 +139,21 @@ function logAudit(actor, action, entry = {}) {
 
 // Global revision: bumped on every write so clients can detect others' edits
 // (sent as an ETag) and we can serve cheap 304s when nothing changed.
-function bump() { state.rev = (state.rev || 0) + 1; return state.rev; }
+function bump() { state.rev = (state.rev || 0) + 1; sseNotify(); return state.rev; }
 const etag = () => '"' + (state.rev || 0) + '"';
+
+// --- Live event stream (SSE) ------------------------------------------------
+// One push channel per connected client. We broadcast a tiny `sync` signal with
+// the new global rev on every write (clients then pull /api/state — instant,
+// no per-entity wiring), plus ephemeral `presence` and `typing` events.
+function sseSend(client, event, data) {
+  try { client.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
+  catch { sse.delete(client); }
+}
+function sseBroadcast(event, data) { for (const c of [...sse]) sseSend(c, event, data); }
+function sseNotify() { sseBroadcast('sync', { rev: state.rev || 0 }); }
+const onlineUsers = () => [...new Set([...sse].map((c) => c.user.username))];
+function broadcastPresence() { sseBroadcast('presence', { online: onlineUsers() }); }
 
 // Edit attribution comes from the authenticated session — it can't be spoofed
 // by a header. `actor` is the session user resolved by the auth gate.
@@ -394,11 +408,11 @@ async function handleApi(req, res, urlPath) {
     // Authorization: reads need a session; writes need pm+; admin ops need admin.
     const isWrite = method !== 'GET' && method !== 'HEAD';
     const adminOnly = resource === 'reset' || resource === 'users';
-    // Marking a channel read is a per-user receipt — allowed for any signed-in
-    // user (incl. read-only monitors), so it's exempt from the write-role gate.
-    const readReceipt = resource === 'channels' && sub === 'read' && method === 'POST';
+    // Marking a channel read or sending a typing ping is a per-user, ephemeral
+    // signal — allowed for any signed-in user (incl. read-only monitors).
+    const ephemeral = resource === 'channels' && (sub === 'read' || sub === 'typing') && method === 'POST';
     if (adminOnly && !can(actor.role, 'admin')) return send(res, 403, { error: 'admin privilege required' });
-    if (isWrite && !adminOnly && !readReceipt && !can(actor.role, 'write')) {
+    if (isWrite && !adminOnly && !ephemeral && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required (read-only role)' });
     }
     // Baseline is schedule-wide → only an unrestricted writer (admin / global pm).
@@ -408,6 +422,26 @@ async function handleApi(req, res, urlPath) {
     // Activity log is visible to writers and admins.
     if (resource === 'audit' && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required' });
+    }
+
+    // Live event stream — long-lived response; do not route through send().
+    if (resource === 'stream' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 3000\n\n');
+      const client = { res, user: actor };
+      sse.add(client);
+      sseSend(client, 'sync', { rev: state.rev || 0 });
+      sseSend(client, 'presence', { online: onlineUsers() });
+      broadcastPresence();
+      const ka = setInterval(() => sseSend(client, 'ping', { t: 1 }), 25000);
+      req.on('close', () => { clearInterval(ka); sse.delete(client); broadcastPresence(); });
+      return;
+    }
+
+    // Typing indicator — ephemeral, relayed to other streams, never stored.
+    if (resource === 'channels' && method === 'POST' && id && sub === 'typing') {
+      if ((state.channels || []).some((c) => c.id === id)) sseBroadcast('typing', { channelId: id, user: actor.username, name: actor.name });
+      return send(res, 204, null);
     }
 
     if (resource === 'users') {

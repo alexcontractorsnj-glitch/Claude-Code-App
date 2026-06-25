@@ -84,9 +84,12 @@ the research (WhatsApp/Slack/Procore) behind the design.
 | `POST /api/messages` | send `{channelId, body}` (write + project scope) |
 | `POST /api/channels/:id/read` | set your read marker (any signed-in user) |
 
-Messages ride the existing `/api/state` + ETag polling for live delivery (a
-push **SSE** stream is the documented next step). On the static GitHub Pages
-demo, chat runs in local mode on the seeded channels.
+**Real-time delivery (SSE).** A **Server-Sent-Events** stream (`GET /api/stream`)
+pushes a tiny `sync` signal on every write, so messages, dispatcher replies, and
+schedule edits land in **well under a second** (measured ~75 ms vs the 4 s poll),
+with **online presence** and **"typing…"** indicators riding the same stream.
+**ETag polling stays as the fallback** (and the static GitHub Pages demo, which
+has no server, runs chat in local mode on the seeded channels).
 
 ## 🤖 AI Dispatcher
 

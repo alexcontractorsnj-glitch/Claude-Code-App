@@ -88,6 +88,9 @@ class MobileStore {
     this.state = normalizeState(lsGet(LS_STATE, null) || { tasks: [] });
     this.outbox = lsGet(LS_OUTBOX, []);
     this.projectId = lsGet(LS_PROJECT, 'all');
+    this.onlineUsers = new Set();      // SSE presence
+    this.typing = {};                  // { channelId: { name: expiryMs } }
+    this._es = null;                   // EventSource (live stream)
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this._setOnline(true));
@@ -114,6 +117,7 @@ class MobileStore {
       await this._hydrate();
       this._flush();
       this._startPolling();
+      this._startStream();
     } catch (err) {
       if (err && err.status === 401) { this.authState = 'required'; this._emitAuth(); }
       else if (err && err.offline && this.user) { this._setOnline(false); this.authState = 'authed'; this._emitAuth(); }
@@ -163,6 +167,7 @@ class MobileStore {
       await this._hydrate();
       this._flush();
       this._startPolling();
+      this._startStream();
       return { ok: true };
     } catch (err) {
       if (err && err.offline) return { ok: false, error: 'No connection — check signal and retry.' };
@@ -174,6 +179,7 @@ class MobileStore {
     if (this.local) { this.resetLocalDemo(); return; }   // no session to drop in demo mode
     try { await api('POST', '/auth/logout'); } catch { /* ignore */ }
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.user = null; this.role = null; this.authState = 'required';
     this._emitAuth();
   }
@@ -243,8 +249,55 @@ class MobileStore {
   }
   _sessionLost() {
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    this._stopStream();
     this.role = null; this.authState = 'required';
     this._emitAuth();
+  }
+
+  // --- Live stream (SSE): instant updates + presence + typing ---------------
+  _startStream() {
+    if (this._es || this.local || typeof EventSource === 'undefined') return;
+    try { this._es = new EventSource(API + '/stream'); } catch { return; }
+    this._es.addEventListener('sync', (e) => { try { if (JSON.parse(e.data).rev !== this.rev) this._pull(); } catch { /* ignore */ } });
+    this._es.addEventListener('presence', (e) => { try { this.onlineUsers = new Set(JSON.parse(e.data).online || []); this.listeners.forEach((fn) => fn()); } catch { /* ignore */ } });
+    this._es.addEventListener('typing', (e) => { try { const d = JSON.parse(e.data); if (d.user !== this.username) this._setTyping(d.channelId, d.name); } catch { /* ignore */ } });
+    this._es.onerror = () => { /* auto-reconnects; polling covers gaps */ };
+  }
+  _stopStream() { if (this._es) { try { this._es.close(); } catch { /* ignore */ } this._es = null; } this.onlineUsers = new Set(); }
+  _pull() {
+    if (this._pulling || this.local) return;
+    this._pulling = true;
+    api('GET', '/state', null, this.rev != null ? { 'If-None-Match': '"' + this.rev + '"' } : {})
+      .then(({ status, data, etag }) => {
+        if (status === 304) return;
+        const nr = revOf(etag) ?? (data && data.rev);
+        if (data && data.tasks && nr !== this.rev) { this.state = normalizeState(data); this.rev = nr; this._emit(); }
+      })
+      .catch((e) => { if (e && e.status === 401) this._sessionLost(); })
+      .finally(() => { this._pulling = false; });
+  }
+  _setTyping(channelId, name) {
+    this.typing[channelId] = this.typing[channelId] || {};
+    this.typing[channelId][name] = Date.now() + 4000;
+    this.listeners.forEach((fn) => fn());
+    clearTimeout(this._typingT);
+    this._typingT = setTimeout(() => this._pruneTyping(), 4200);
+  }
+  _pruneTyping() {
+    const now = Date.now(); let changed = false;
+    for (const c of Object.keys(this.typing)) for (const n of Object.keys(this.typing[c])) if (this.typing[c][n] <= now) { delete this.typing[c][n]; changed = true; }
+    if (changed) this.listeners.forEach((fn) => fn());
+  }
+  typingIn(channelId) {
+    const m = this.typing[channelId]; if (!m) return [];
+    const now = Date.now();
+    return Object.keys(m).filter((n) => m[n] > now && n !== this.user);
+  }
+  postTyping(channelId) {
+    const now = Date.now();
+    if ((this._lastTyping && now - this._lastTyping < 2000) || this.local) return;
+    this._lastTyping = now;
+    api('POST', '/channels/' + channelId + '/typing').catch(() => {});
   }
 
   // ---- selectors (read from the live, pending-merged state) ----

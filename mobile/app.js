@@ -435,6 +435,9 @@ function renderConversation(main, channelId) {
   });
   main.appendChild(stream);
 
+  const typers = store.typingIn(channelId);
+  if (typers.length) main.appendChild(el('div', { class: 'cf-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
+
   if (store.canPost(channelId) && ui.chatRec) {
     const timeLbl = el('span', { class: 'cf-rec-time' }, '0:00');
     if (ui.chatRecInt) clearInterval(ui.chatRecInt);
@@ -456,6 +459,7 @@ function renderConversation(main, channelId) {
     const ta = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Message…' });
     const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; render(); };
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+    ta.addEventListener('input', () => store.postTyping(channelId));
     const btns = [];
     if (supportsDictation()) {
       let dict = null;

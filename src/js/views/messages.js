@@ -66,6 +66,7 @@ export function renderMessages(mount, ctx) {
   const side = el('div', { class: 'msg-side' }, [
     el('div', { class: 'msg-side-head' }, [
       el('span', { class: 'msg-monitor-tag' }, '◉ Monitor'),
+      store.onlineCount() ? el('span', { class: 'msg-presence', title: 'people online' }, '● ' + store.onlineCount()) : null,
       el('span', { class: 'msg-side-sub' }, store.isUnrestricted() ? 'All projects' : `${store.scope.length || 'all'} project(s)`),
     ]),
     el('div', { class: 'msg-chan-list' }, channels.length ? channels.map((c) => {
@@ -153,6 +154,12 @@ export function renderMessages(mount, ctx) {
   }
   renderResults();
 
+  // ---- typing indicator ----
+  if (channel && !view.search.trim()) {
+    const typers = store.typingIn(channel.id);
+    if (typers.length) main.appendChild(el('div', { class: 'msg-typing' }, `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing…`));
+  }
+
   // ---- composer ----
   if (channel && !view.search.trim()) {
     const canPost = store.canPost(channel.id);
@@ -186,6 +193,7 @@ export function renderMessages(mount, ctx) {
         setTimeout(() => { const t = mount.querySelector('.msg-input'); if (t) t.focus(); }, 0);
       };
       ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+      ta.addEventListener('input', () => store.postTyping(channel.id));
       const controls = [];
       if (supportsDictation()) {
         let dict = null;

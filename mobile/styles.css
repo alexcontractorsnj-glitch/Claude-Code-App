@@ -277,3 +277,6 @@ textarea.cf-input { resize: vertical; }
 /* ---- Dispatcher (bot) bubbles ---- */
 .cf-bubble.bot { background: rgba(139,92,246,.14); border-color: rgba(139,92,246,.35); border-top-left-radius: 4px; }
 .cf-bubble.bot .cf-bubble-author { color: #b794f6; }
+
+/* ---- Typing indicator ---- */
+.cf-typing { font-size: 12px; font-style: italic; color: var(--text-faint); padding: 4px 14px; flex-shrink: 0; background: var(--bg-2); }
