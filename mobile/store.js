@@ -390,6 +390,19 @@ class MobileStore {
     this._queueWrite({ kind: 'voice.send', channelId, linkedTo: linkedTo || null, method: 'POST', path: '/messages', body: { channelId, mime: clip.mime, b64: clip.b64, dur: clip.dur } });
     this.markRead(channelId);
   }
+  photoSrc(msg) { if (!msg || !msg.photo) return null; return msg.photo.url || ('/api/photos/' + msg.photo.id); }
+  sendPhoto(channelId, pic, linkedTo) {
+    const ch = this.channel(channelId);
+    if (!ch || !pic || !pic.b64) return;
+    if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
+    this._queueWrite({ kind: 'photo.send', channelId, linkedTo: linkedTo || null, method: 'POST', path: '/messages', body: { channelId, mime: pic.mime, b64: pic.b64, w: pic.w, h: pic.h } });
+    this.markRead(channelId);
+  }
+  postTaskPhoto(taskId, pic) {
+    const t = this.task(taskId); if (!t) return;
+    const ch = this.channelFor(t.projectId); if (!ch) return;
+    this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
+  }
 
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
@@ -468,6 +481,10 @@ class MobileStore {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
+    } else if (op.kind === 'photo.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h } }));
+      this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
   }
@@ -493,6 +510,9 @@ class MobileStore {
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
       this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
+    } else if (op.kind === 'photo.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h }, createdAt: new Date().toISOString(), _provisional: true });
     }
   }
 
@@ -508,10 +528,14 @@ class MobileStore {
         const op = this.outbox[0];
         try {
           let data, etag;
-          if (op.kind === 'voice.send') {
-            // Two-step: upload the audio blob, then post the message referencing it.
-            const up = await api('POST', '/voice', { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
-            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, voice: { id: up.data.id }, linkedTo: op.linkedTo || null }));
+          if (op.kind === 'voice.send' || op.kind === 'photo.send') {
+            // Two-step: upload the media blob, then post the message referencing it.
+            const isPhoto = op.kind === 'photo.send';
+            const up = await api('POST', isPhoto ? '/photos' : '/voice', isPhoto
+              ? { mime: op.body.mime, data: op.body.b64, w: op.body.w, h: op.body.h }
+              : { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
+            const ref = isPhoto ? { photo: { id: up.data.id } } : { voice: { id: up.data.id } };
+            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, ...ref, linkedTo: op.linkedTo || null }));
           } else {
             const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
             ({ data, etag } = await api(op.method, op.path, op.body, headers));
@@ -553,7 +577,7 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
-    } else if (op.kind === 'message.send' || op.kind === 'voice.send') {
+    } else if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') {
       const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);
     }

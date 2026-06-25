@@ -15,6 +15,7 @@ import { renderDocuments } from './views/documents.js';
 import { renderField } from './views/field.js';
 import { renderPunch } from './views/punch.js';
 import { renderDeliveries } from './views/deliveries.js';
+import { renderPhotos } from './views/photos.js';
 import { renderMessages } from './views/messages.js';
 import { renderTestimonials } from './views/testimonials.js';
 import { DOC_KINDS } from './docs.js';
@@ -25,6 +26,7 @@ import { scheduleVariance, taskVariance, compareBaselines } from './variance.js'
 import { levelingSummary, assignmentConflicts, proposeLeveling, applyChanges, detectConflicts } from './leveling.js';
 import { computeAlerts, alertSummary } from './alerts.js';
 import { startRecording, supportsRecording, fmtDur } from './voice.js';
+import { capturePhoto, supportsPhotos } from './media.js';
 
 const ctx = {
   view: 'gantt',
@@ -68,6 +70,7 @@ const VIEWS = {
   field: { label: 'Field', icon: '☰', render: renderField },
   punch: { label: 'Punch', icon: '✔', render: renderPunch },
   deliveries: { label: 'Deliveries', icon: '🚚', render: renderDeliveries },
+  photos: { label: 'Photos', icon: '📷', render: renderPhotos },
   messages: { label: 'Messages', icon: '💬', render: renderMessages },
   testimonials: { label: 'Testimonials', icon: '❝', render: renderTestimonials },
 };
@@ -393,6 +396,7 @@ function taskActivitySection(taskId) {
         el('div', { class: 'ta-byline' }, [el('span', { class: 'ta-author' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time' }, taFmt(m.createdAt))]),
         m.body ? el('div', { class: 'ta-body' }, m.body) : null,
         m.voice ? el('audio', { class: 'ta-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+        m.photo ? el('img', { class: 'ta-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
       ]));
     });
     feed.scrollTop = feed.scrollHeight;
@@ -406,6 +410,9 @@ function taskActivitySection(taskId) {
     const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); post(); } });
     const controls = [input, el('button', { class: 'btn primary sm', onclick: post }, 'Post')];
+    if (supportsPhotos()) {
+      controls.push(el('button', { class: 'btn icon', title: 'Add photo', onclick: async () => { const pic = await capturePhoto(); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
+    }
     if (supportsRecording()) {
       let rec = null, iv = null;
       const recBtn = el('button', { class: 'btn icon', title: 'Voice note' }, '🎤');

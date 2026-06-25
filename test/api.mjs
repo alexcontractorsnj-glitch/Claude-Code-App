@@ -100,6 +100,20 @@ try {
   await login('admin', 'admin123');
   ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'message.send'), 'message.send audited');
 
+  // --- photos on a task ---
+  const pdata = Buffer.from('fake-image-bytes').toString('base64');
+  const pup = await http('POST', '/api/photos', { mime: 'image/jpeg', data: pdata, w: 1280, h: 960 });
+  ok(pup.status === 201 && pup.data.id && pup.data.w === 1280, 'photo upload → id + dims');
+  const pmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', photo: { id: pup.data.id }, linkedTo: { kind: 'task', id: 't4' } });
+  ok(pmsg.status === 201 && pmsg.data.photo && pmsg.data.photo.id === pup.data.id && pmsg.data.linkedTo.id === 't4', 'photo message linked to task');
+  ok(JSON.stringify(await http('GET', '/api/state')).indexOf(pdata) === -1, 'image bytes NOT in /api/state');
+  const pfetch = await fetch(BASE + '/api/photos/' + pup.data.id, { headers: { Cookie: cookie } });
+  ok(pfetch.status === 200 && pfetch.headers.get('content-type') === 'image/jpeg', 'photo GET streams image');
+  ok((await http('POST', '/api/photos', { mime: 'image/jpeg', data: 'A'.repeat(1_900_000) })).status === 413, 'oversize photo → 413');
+  await login('viewer', 'view123');
+  ok((await http('POST', '/api/photos', { mime: 'image/jpeg', data: pdata })).status === 403, 'viewer cannot upload photo → 403');
+  await login('admin', 'admin123');
+
   // task Activity — a message linked to a task (the task's slice of the channel)
   const tmsg = await http('POST', '/api/messages', { channelId: 'ch-p1', body: 'Footing rebar looks good', linkedTo: { kind: 'task', id: 't4' } });
   ok(tmsg.status === 201 && tmsg.data.linkedTo && tmsg.data.linkedTo.id === 't4', 'message carries linkedTo task');

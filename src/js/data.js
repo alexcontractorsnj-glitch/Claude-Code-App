@@ -698,6 +698,17 @@ class Store {
     const ch = this.channelFor(t.projectId); if (!ch) return null;
     return this.sendVoice(ch.id, clip, { kind: 'task', id: taskId });
   }
+  postTaskPhoto(taskId, pic) {
+    const t = this.task(taskId); if (!t) return null;
+    const ch = this.channelFor(t.projectId); if (!ch) return null;
+    return this.sendPhoto(ch.id, pic, { kind: 'task', id: taskId });
+  }
+  // All photos in scope (for the project Photos gallery).
+  photosFor(projectId) {
+    return (this.messages || [])
+      .filter((m) => m.photo && (projectId === 'all' || (this.channel(m.channelId) || {}).projectId === projectId))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
 
   async sendMessage(channelId, body, extra = {}) {
     const ch = this.channel(channelId);
@@ -753,6 +764,40 @@ class Store {
     const msg = makeMessage(this.state.messages, {
       channelId, authorId: this._uid(), authorName: this.user, linkedTo: linkedTo || null,
       voice: { url: `data:${clip.mime};base64,${clip.b64}`, dur: clip.dur, mime: clip.mime },
+    });
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
+  photoSrc(msg) {
+    if (!msg || !msg.photo) return null;
+    return msg.photo.url || ('/api/photos/' + msg.photo.id);
+  }
+  // Send a photo. `pic` = { mime, b64, w, h }. Remote uploads to /api/photos
+  // (out of /api/state) then posts a message referencing it; demo embeds a data-URL.
+  async sendPhoto(channelId, pic, linkedTo) {
+    const ch = this.channel(channelId);
+    if (!ch || !pic || !pic.b64) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const up = await api('POST', '/photos', { mime: pic.mime, data: pic.b64, w: pic.w, h: pic.h });
+        const { data, etag } = await api('POST', '/messages', { channelId, photo: { id: up.data.id }, linkedTo: linkedTo || null });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, {
+      channelId, authorId: this._uid(), authorName: this.user, linkedTo: linkedTo || null,
+      photo: { url: `data:${pic.mime};base64,${pic.b64}`, w: pic.w, h: pic.h },
     });
     this.state.messages.push(msg);
     this.state.messages = capChannel(this.state.messages, channelId);

@@ -60,6 +60,9 @@ const AUDIT_CAP = 500;                          // keep the most recent N entrie
 const VOICE_FILE = path.join(DATA_DIR, 'voice.json');
 const VOICE_CAP = 300;                           // keep the most recent N voice notes
 const MAX_VOICE_B64 = 1_400_000;                 // ~1MB of audio (≈ 45s opus) per note
+const PHOTO_FILE = path.join(DATA_DIR, 'photos.json');
+const PHOTO_CAP = 500;                            // keep the most recent N photos
+const MAX_PHOTO_B64 = 1_800_000;                 // client compresses to ~1280px JPEG
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -74,6 +77,7 @@ let state;
 let users;                                    // [{ username, name, role, projects, passwordHash }]
 let audit = [];                               // append-only activity log (capped)
 let voice = {};                               // { id: { mime, data(base64), dur, by, at } } — audio blobs, kept out of /api/state
+let photos = {};                              // { id: { mime, data(base64), w, h, by, at } } — image blobs, kept out of /api/state
 let sse = new Set();                          // open Server-Sent-Events streams: { res, user }
 let writeChain = Promise.resolve();           // serialize writes
 
@@ -121,6 +125,16 @@ async function loadVoice() {
 }
 const persistVoice = () => persist(VOICE_FILE, voice);
 let voiceSeq = 0;
+
+async function loadPhotos() {
+  if (existsSync(PHOTO_FILE)) {
+    try { const v = JSON.parse(await readFile(PHOTO_FILE, 'utf8')); if (v && typeof v === 'object') return v; }
+    catch { /* corrupt → fresh */ }
+  }
+  return {};
+}
+const persistPhotos = () => persist(PHOTO_FILE, photos);
+let photoSeq = 0;
 
 // Append an immutable activity entry, attributed to the acting session user.
 let auditSeq = 0;
@@ -739,6 +753,28 @@ async function handleApi(req, res, urlPath) {
       }
     }
 
+    if (resource === 'photos') {
+      if (method === 'POST' && !id) {                 // upload a photo → { id, mime, w, h }
+        const body = await readBody(req);
+        const data = String(body.data || '');
+        if (!data) return send(res, 400, { error: 'no image data' });
+        if (data.length > MAX_PHOTO_B64) return send(res, 413, { error: 'photo too large' });
+        const pid = 'ph' + Date.now().toString(36) + (photoSeq++).toString(36);
+        photos[pid] = { mime: typeof body.mime === 'string' ? body.mime : 'image/jpeg', data, w: +body.w || 0, h: +body.h || 0, by: actor.username, at: new Date().toISOString() };
+        const ids = Object.keys(photos);
+        if (ids.length > PHOTO_CAP) ids.slice(0, ids.length - PHOTO_CAP).forEach((k) => delete photos[k]);
+        persistPhotos();
+        return send(res, 201, { id: pid, mime: photos[pid].mime, w: photos[pid].w, h: photos[pid].h });
+      }
+      if (method === 'GET' && id) {
+        const p = photos[id];
+        if (!p) return send(res, 404, { error: 'photo not found' });
+        const buf = Buffer.from(p.data, 'base64');
+        res.writeHead(200, { 'Content-Type': p.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000' });
+        return res.end(buf);
+      }
+    }
+
     if (resource === 'messages') {
       if (!Array.isArray(state.messages)) state.messages = [];
       if (method === 'POST' && !id) {                 // send a message to a channel
@@ -751,17 +787,19 @@ async function handleApi(req, res, urlPath) {
         }
         const vref = body.voice && body.voice.id && voice[body.voice.id]
           ? { id: body.voice.id, dur: voice[body.voice.id].dur, mime: voice[body.voice.id].mime } : null;
+        const pref = body.photo && body.photo.id && photos[body.photo.id]
+          ? { id: body.photo.id, mime: photos[body.photo.id].mime, w: photos[body.photo.id].w, h: photos[body.photo.id].h } : null;
         const msg = makeMessage(state.messages, {
           channelId: ch.id, authorId: actor.username, authorName: actor.name,
           body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
-          voice: vref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+          voice: vref, photo: pref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
         });
-        if (!msg.body && !msg.attachments.length && !msg.voice) return send(res, 400, { error: 'empty message' });
+        if (!msg.body && !msg.attachments.length && !msg.voice && !msg.photo) return send(res, 400, { error: 'empty message' });
         state.messages.push(msg);
         state.messages = capChannel(state.messages, ch.id);
         state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
         bump(); await persistState();
-        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.body.slice(0, 80) });
+        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.voice ? '🎤 voice note' : msg.photo ? '📷 photo' : msg.body.slice(0, 80) });
         // @dispatcher → the AI replies asynchronously (posts a follow-up message).
         if (mentionsDispatcher(msg.body)) dispatcherReply(ch, actor).catch((e) => console.error('dispatcher', e));
         return send(res, 201, msg, { ETag: etag() });
@@ -905,6 +943,7 @@ state = await loadState();
 users = await loadUsers();
 audit = await loadAudit();
 voice = await loadVoice();
+photos = await loadPhotos();
 server.listen(PORT, () => {
   console.log(`\n  BuildFlow ERP Schedule  →  http://localhost:${PORT}`);
   console.log(`  REST API                →  http://localhost:${PORT}/api/state`);

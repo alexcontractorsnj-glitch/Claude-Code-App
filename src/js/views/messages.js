@@ -13,6 +13,11 @@ import { callsSupported } from '../webrtc.js';
 
 const view = { channelId: null, search: '', rec: null, recInt: null, recSec: 0 };
 
+// Inline image for a photo message.
+function photoEl(m) {
+  if (!m.photo) return null;
+  return el('img', { class: 'msg-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') });
+}
 // Inline audio player for a voice-note message.
 function voiceEl(m) {
   if (!m.voice) return null;
@@ -138,6 +143,7 @@ export function renderMessages(mount, ctx) {
               el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, dayOf(m.createdAt) + ' · ' + timeOf(m.createdAt))]),
               m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,
               voiceEl(m),
+              photoEl(m),
             ]),
           ]),
         ]));
@@ -160,6 +166,7 @@ export function renderMessages(mount, ctx) {
           el('div', { class: 'msg-byline' }, [el('span', { class: 'msg-author' }, m.authorName), el('span', { class: 'msg-time' }, timeOf(m.createdAt))]),
           m.body ? el('div', { class: 'msg-body' }, bodyNodes(m.body)) : null,
           voiceEl(m),
+          photoEl(m),
           (m.linkedTo && m.linkedTo.kind === 'task') ? el('div', { class: 'msg-taskchip', onclick: () => ctx.openTask && ctx.openTask(m.linkedTo.id) }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
         ]),
       ]));

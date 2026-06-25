@@ -15,6 +15,7 @@ import { PUNCH_STATUSES, PUNCH_PRIORITIES } from '../src/js/punch.js';
 import { WEATHER } from '../src/js/fieldreports.js';
 import { startRecording, startDictation, supportsRecording, supportsDictation, fmtDur, dictationLabel, cycleDictationLang } from '../src/js/voice.js';
 import { callsSupported } from '../src/js/webrtc.js';
+import { capturePhoto, supportsPhotos } from '../src/js/media.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
@@ -250,6 +251,7 @@ function renderTaskActivity(body, taskId) {
         el('div', { class: 'ta-byline-m' }, [el('span', { class: 'ta-author-m' }, bot ? '🤖 ' + m.authorName : m.authorName), el('span', { class: 'ta-time-m' }, msgTime(m.createdAt))]),
         m.body ? el('div', { class: 'ta-body-m' }, mentionNodes(m.body)) : null,
         m.voice ? el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }) : null,
+        m.photo ? el('img', { class: 'ta-photo-m', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
       ]));
     });
   };
@@ -260,6 +262,9 @@ function renderTaskActivity(body, taskId) {
     const post = () => { const v = input.value.trim(); if (!v) return; store.postTaskMessage(taskId, v); input.value = ''; renderFeed(); };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } });
     const row = [input, el('button', { class: 'cf-chat-send', onclick: post }, '➤')];
+    if (supportsPhotos()) {
+      row.push(el('button', { class: 'cf-chat-ico', title: 'Photo', onclick: async () => { const pic = await capturePhoto({ camera: true }); if (pic && pic.b64) { store.postTaskPhoto(taskId, pic); renderFeed(); } } }, '📷'));
+    }
     if (supportsRecording()) {
       let rec = null, iv = null;
       const recBtn = el('button', { class: 'cf-chat-ico rec', title: 'Voice note' }, '🎤');
@@ -480,6 +485,7 @@ function renderConversation(main, channelId) {
           el('audio', { class: 'cf-audio', controls: '', preload: 'none', src: store.voiceSrc(m) }),
           el('span', { class: 'cf-voice-dur' }, '🎤 ' + fmtDur(m.voice.dur)),
         ]) : null,
+        m.photo ? el('img', { class: 'cf-bubble-photo', src: store.photoSrc(m), loading: 'lazy', onclick: () => window.open(store.photoSrc(m), '_blank') }) : null,
         m.linkedTo && m.linkedTo.kind === 'task' ? el('div', { class: 'cf-taskchip' }, '↳ ' + ((store.task(m.linkedTo.id) || {}).name || 'task')) : null,
         el('div', { class: 'cf-bubble-meta' }, [
           el('span', {}, msgTime(m.createdAt)),
