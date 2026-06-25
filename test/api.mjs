@@ -82,6 +82,24 @@ try {
   const actions = new Set((await http('GET', '/api/audit?all=1')).data.map((e) => e.action));
   ok(['billing.create', 'co.create', 'co.update', 'punch.create'].every((a) => actions.has(a)), 'audit captured new actions');
 
+  // --- messaging ---
+  const chP1 = 'ch-p1';
+  const sent = await http('POST', '/api/messages', { channelId: chP1, body: 'hello crew @viewer' });
+  ok(sent.status === 201 && sent.data.authorId === 'admin' && sent.data.authorName === 'System Admin', 'message send: attributed to session');
+  ok((await http('POST', '/api/messages', { channelId: 'ch-nope', body: 'x' })).status === 400, 'message to unknown channel → 400');
+  ok((await http('POST', '/api/messages', { channelId: chP1, body: '' })).status === 400, 'empty message → 400');
+  // viewer can read messages (in state) + post a read receipt, but cannot send
+  await login('viewer', 'view123');
+  ok((await http('GET', '/api/state')).data.messages.some((m) => m.channelId === chP1), 'viewer reads messages in state');
+  ok((await http('POST', '/api/messages', { channelId: chP1, body: 'nope' })).status === 403, 'viewer cannot send → 403');
+  ok((await http('POST', '/api/channels/' + chP1 + '/read', {})).status === 200, 'viewer can mark channel read');
+  // scoped PM may post to own project channel, not others'
+  await login('awhitfield', 'build123');
+  ok((await http('POST', '/api/messages', { channelId: 'ch-p1', body: 'on it' })).status === 201, 'scoped PM posts to own channel');
+  ok((await http('POST', '/api/messages', { channelId: 'ch-p2', body: 'nope' })).status === 403, 'scoped PM other channel → 403');
+  await login('admin', 'admin123');
+  ok((await http('GET', '/api/audit?all=1')).data.some((e) => e.action === 'message.send'), 'message.send audited');
+
   // admin user management
   ok((await http('POST', '/api/users', { username: 'tmp', password: 'pw123456', role: 'pm' })).status === 201, 'admin creates user');
   ok((await http('DELETE', '/api/users/admin')).status === 400, 'cannot delete last admin');

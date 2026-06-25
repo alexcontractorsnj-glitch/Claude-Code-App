@@ -23,6 +23,7 @@ import { makeDoc, DOC_KINDS } from './src/js/docs.js';
 import { makeChangeOrder, CO_STATUSES } from './src/js/changeorders.js';
 import { makeReport } from './src/js/fieldreports.js';
 import { makePunchItem, PUNCH_STATUSES, PUNCH_PRIORITIES, cleanAttachments } from './src/js/punch.js';
+import { makeMessage, capChannel, setRead, channelIdForProject } from './src/js/messaging.js';
 import {
   seedUsers, verifyPassword, hashPassword, can, isRole, publicUser,
   canEditProject, isUnrestricted,
@@ -239,8 +240,11 @@ async function handleApi(req, res, urlPath) {
     // Authorization: reads need a session; writes need pm+; admin ops need admin.
     const isWrite = method !== 'GET' && method !== 'HEAD';
     const adminOnly = resource === 'reset' || resource === 'users';
+    // Marking a channel read is a per-user receipt — allowed for any signed-in
+    // user (incl. read-only monitors), so it's exempt from the write-role gate.
+    const readReceipt = resource === 'channels' && sub === 'read' && method === 'POST';
     if (adminOnly && !can(actor.role, 'admin')) return send(res, 403, { error: 'admin privilege required' });
-    if (isWrite && !adminOnly && !can(actor.role, 'write')) {
+    if (isWrite && !adminOnly && !readReceipt && !can(actor.role, 'write')) {
       return send(res, 403, { error: 'write privilege required (read-only role)' });
     }
     // Baseline is schedule-wide → only an unrestricted writer (admin / global pm).
@@ -501,6 +505,40 @@ async function handleApi(req, res, urlPath) {
         logAudit(actor, 'punch.delete', { targetName: `${p.number} ${p.title}`, projectId: p.projectId });
         res.writeHead(204, { ETag: etag() }); return res.end();
       }
+    }
+
+    if (resource === 'messages') {
+      if (!Array.isArray(state.messages)) state.messages = [];
+      if (method === 'POST' && !id) {                 // send a message to a channel
+        const body = await readBody(req);
+        const ch = (state.channels || []).find((c) => c.id === body.channelId);
+        if (!ch) return send(res, 400, { error: 'unknown channel' });
+        // Posting to a project channel needs write access to that project.
+        if (ch.type === 'project' && !canEditProject(actor, ch.projectId)) {
+          return send(res, 403, { error: 'you do not have access to that project' });
+        }
+        const msg = makeMessage(state.messages, {
+          channelId: ch.id, authorId: actor.username, authorName: actor.name,
+          body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
+          linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+        });
+        if (!msg.body && !msg.attachments.length) return send(res, 400, { error: 'empty message' });
+        state.messages.push(msg);
+        state.messages = capChannel(state.messages, ch.id);
+        state.reads = setRead(state.reads, actor.username, ch.id, msg.createdAt);  // author has read their own
+        bump(); await persistState();
+        logAudit(actor, 'message.send', { targetId: msg.id, targetName: ch.name, projectId: ch.projectId, detail: msg.body.slice(0, 80) });
+        return send(res, 201, msg, { ETag: etag() });
+      }
+    }
+
+    if (resource === 'channels' && method === 'POST' && id && sub === 'read') {
+      const ch = (state.channels || []).find((c) => c.id === id);
+      if (!ch) return send(res, 404, { error: 'channel not found' });
+      const body = await readBody(req).catch(() => ({}));
+      state.reads = setRead(state.reads, actor.username, ch.id, body.at || new Date().toISOString());
+      bump(); await persistState();
+      return send(res, 200, { channelId: ch.id, at: state.reads[actor.username][ch.id] }, { ETag: etag() });
     }
 
     if (resource === 'tasks') {

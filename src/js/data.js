@@ -18,6 +18,10 @@ import { makeDoc } from './docs.js';
 import { makeChangeOrder } from './changeorders.js';
 import { makeReport } from './fieldreports.js';
 import { makePunchItem } from './punch.js';
+import {
+  makeMessage, capChannel, setRead, lastRead, unreadCount,
+  messagesForChannel, lastMessage, channelIdForProject,
+} from './messaging.js';
 
 // Re-export domain constants so existing view imports (`from '../data.js'`) hold.
 export { TRADES, STATUSES, STATUS_ORDER, Dates };
@@ -107,9 +111,11 @@ class Store {
   _applyUser(u) {
     if (!u) return;
     this.user = u.name || u.username;
+    this.username = u.username || u.name;       // stable id for message attribution + read state
     this.role = u.role;
     this.scope = Array.isArray(u.projects) ? u.projects : [];
   }
+  _uid() { return this.username || this.user || 'me'; }
 
   // ---- auth actions ----
   async login(username, password) {
@@ -586,6 +592,61 @@ class Store {
     if (this.mode === 'remote') {
       this._setSyncing(true);
       api('DELETE', '/punch/' + id).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; this._setSyncing(false); }).catch((e) => this._writeFailed(e));
+    }
+  }
+
+  // ---- messaging (channels + messages) ----
+  get channels() { return (this.state.channels || []).filter((c) => !c.archived); }
+  get messages() { return this.state.messages || []; }
+  channelFor(projectId) { return this.channels.find((c) => c.id === channelIdForProject(projectId)) || null; }
+  channel(id) { return this.channels.find((c) => c.id === id) || null; }
+  messagesFor(channelId) { return messagesForChannel(this.messages, channelId); }
+  lastMessageFor(channelId) { return lastMessage(this.messages, channelId); }
+  lastReadAt(channelId) { return lastRead(this.state.reads, this._uid(), channelId); }
+  unread(channelId) { return unreadCount(this.messages, channelId, this.lastReadAt(channelId), this._uid()); }
+  totalUnread() { return this.channels.reduce((a, c) => a + this.unread(c.id), 0); }
+  // Can the current user post to this channel? (project channels are scope-gated)
+  canPost(channelId) {
+    const ch = this.channel(channelId);
+    if (!ch) return false;
+    return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
+  }
+
+  async sendMessage(channelId, body, extra = {}) {
+    const ch = this.channel(channelId);
+    if (!ch) return null;
+    if (!this.canPost(channelId)) { this._notify('You don’t have access to that project’s channel.', 'warn'); return null; }
+    if (this.mode === 'remote') {
+      this._setSyncing(true);
+      try {
+        const { data, etag } = await api('POST', '/messages', { channelId, body, ...extra });
+        this.rev = revOf(etag) ?? this.rev;
+        this.state.messages.push(data);
+        this.state.reads = setRead(this.state.reads, this._uid(), channelId, data.createdAt);
+        this._emit();
+        return data;
+      } catch (e) { this._writeFailed(e); return null; }
+      finally { this._setSyncing(false); }
+    }
+    const msg = makeMessage(this.state.messages, { channelId, authorId: this._uid(), authorName: this.user, body, ...extra });
+    if (!msg.body && !msg.attachments.length) return null;
+    this.state.messages.push(msg);
+    this.state.messages = capChannel(this.state.messages, channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, msg.createdAt);
+    this._emit();
+    return msg;
+  }
+
+  markRead(channelId) {
+    if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
+    const at = new Date().toISOString();
+    const before = this.lastReadAt(channelId);
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, at);
+    this._emit();
+    if (this.mode === 'remote' && before !== at) {
+      api('POST', '/channels/' + channelId + '/read', { at })
+        .then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; })
+        .catch(() => { /* read receipts are best-effort */ });
     }
   }
 

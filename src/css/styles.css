@@ -654,3 +654,44 @@ textarea.input { resize: vertical; font-family: inherit; }
   .board { grid-template-columns: repeat(2, 1fr); }
   .evm-deck { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---- Messages (communication monitor) ---- */
+.msg-view { display: flex; gap: 14px; height: calc(100vh - 250px); min-height: 440px; }
+.msg-side { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.msg-side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.msg-monitor-tag { font-size: 12px; font-weight: 800; color: var(--accent-2); letter-spacing: .4px; }
+.msg-side-sub { font-size: 11px; color: var(--text-faint); }
+.msg-chan-list { overflow-y: auto; flex: 1; }
+.msg-chan { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.msg-chan:hover { background: var(--bg-3); }
+.msg-chan.active { background: rgba(245,166,35,.08); border-left: 3px solid var(--accent); padding-left: 10px; }
+.msg-chan-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.msg-chan-meta { flex: 1; min-width: 0; }
+.msg-chan-name { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg-chan-prev { font-size: 12px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg-chan-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.msg-chan-time { font-size: 10.5px; color: var(--text-faint); }
+.msg-unread { background: var(--accent); color: #1a1206; font-size: 11px; font-weight: 800; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: grid; place-items: center; }
+.msg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.msg-main-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.msg-main-title { font-weight: 800; font-size: 15px; }
+.msg-head-actions { display: flex; align-items: center; gap: 8px; }
+.msg-search { width: 220px; }
+.msg-stream { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg-daysep { text-align: center; font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .6px; margin: 6px 0; }
+.msg-row { display: flex; gap: 10px; align-items: flex-start; }
+.msg-avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; background: linear-gradient(135deg, var(--accent), #d9821a); color: #1a1206; display: grid; place-items: center; font-size: 11px; font-weight: 800; }
+.msg-row.mine .msg-avatar { background: linear-gradient(135deg, var(--blue), #2563eb); color: #fff; }
+.msg-bubble-wrap { min-width: 0; }
+.msg-byline { display: flex; align-items: baseline; gap: 8px; }
+.msg-author { font-weight: 700; font-size: 13px; }
+.msg-time { font-size: 11px; color: var(--text-faint); }
+.msg-body { font-size: 13.5px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+.msg-mention { color: var(--accent-2); font-weight: 700; background: rgba(245,166,35,.1); padding: 0 3px; border-radius: 4px; }
+.msg-composer { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); align-items: flex-end; }
+.msg-input { flex: 1; resize: none; min-height: 40px; max-height: 120px; }
+.msg-composer.readonly { color: var(--text-faint); font-size: 13px; justify-content: center; }
+.msg-search-note { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.msg-result { padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; cursor: pointer; }
+.msg-result:hover { background: var(--bg-3); }
+.msg-result-ch { font-size: 11px; font-weight: 700; color: var(--accent-2); margin-bottom: 4px; }

@@ -51,6 +51,39 @@ The field rules (task bucketing, the progress stepper, status coherence, and the
 outbox reducers) live in pure, unit-tested **`src/mobile/core.js`** — no DOM, no
 browser globals — so they ship in one place and are covered by `npm test`.
 
+## 💬 Messages — team communication & monitoring
+
+Built-in team messaging connects the office and the field, and gives PMs/admins a
+**communication monitor** on the web. It's **server-persistent** (history,
+search, audit, RBAC) — the deliberate Slack/Teams trade-off over consumer E2EE,
+so oversight is actually possible. See
+[`docs/messaging-research-and-plan.md`](docs/messaging-research-and-plan.md) for
+the research (WhatsApp/Slack/Procore) behind the design.
+
+- **One channel per project**, auto-provisioned. Posting to a project channel is
+  gated by that project's write **scope** (server-enforced); **reads are
+  portfolio-wide**, matching the rest of the app.
+- **Desktop — Messages view (the monitor):** channel list with unread badges +
+  last-message previews, the full conversation, `@mention` highlighting, a
+  composer, **search across all messages**, and **CSV export** per channel. A
+  scoped PM/viewer sees everything read-only where they can't post.
+- **Corefield — 💬 Chat tab:** WhatsApp-style bubbles with delivery ticks, day
+  separators, unread badges, and **offline send** (messages queue in the outbox
+  and replay on reconnect, just like every other field write).
+- **Shared, tested core** (`src/js/messaging.js`): channels, messages, unread
+  counts, `@mention` parsing, search, and a per-channel **cap** (last 200) that
+  keeps the zero-DB JSON store bounded. Every send is **audited**
+  (`message.send`) and attributed to the session user.
+
+| Method & path | Action |
+|---|---|
+| `POST /api/messages` | send `{channelId, body}` (write + project scope) |
+| `POST /api/channels/:id/read` | set your read marker (any signed-in user) |
+
+Messages ride the existing `/api/state` + ETag polling for live delivery (a
+push **SSE** stream is the documented next step). On the static GitHub Pages
+demo, chat runs in local mode on the seeded channels.
+
 ## Run it
 
 No build step, no `npm install` — pure ES modules + a zero-dependency Node server.
@@ -416,9 +449,12 @@ zero total float are flagged), not hard-coded.
 - Push notifications to Corefield (today's work, new punch assigned to your crew)
 - Database-backed persistence (replace the JSON files)
 
-**Done recently:** ✅ **Corefield mobile field app** — installable PWA (Work /
-Punch / Reports), offline outbox with replay-on-reconnect, on the shared API +
-domain core · ✅ drag-to-reschedule on the Gantt (move + edge-resize) ·
+**Done recently:** ✅ **Team messaging** — per-project channels with a web
+communication monitor (search + CSV export) and a Corefield Chat tab (bubbles,
+ticks, offline send), server-persistent + audited · ✅ **Corefield mobile field
+app** — installable PWA (Work / Punch / Reports), offline outbox with
+replay-on-reconnect, on the shared API + domain core · ✅ drag-to-reschedule on
+the Gantt (move + edge-resize) ·
 ✅ server-side persistence via REST API behind the same store interface ·
 ✅ multi-user concurrency (ETag/If-Match optimistic locking + live polling) ·
 ✅ earned-value (CPI/SPI) cost reporting with S-curve ·

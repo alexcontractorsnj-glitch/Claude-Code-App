@@ -20,6 +20,7 @@ const SHELL = [
   '../src/js/utils.js',
   '../src/js/punch.js',
   '../src/js/fieldreports.js',
+  '../src/js/messaging.js',
 ];
 
 self.addEventListener('install', (event) => {

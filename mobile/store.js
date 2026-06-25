@@ -10,6 +10,10 @@ import { TRADES, STATUSES, Dates, normalizeState, seedState, makeTask, applyTask
 import { makePunchItem } from '../src/js/punch.js';
 import { makeReport } from '../src/js/fieldreports.js';
 import {
+  makeMessage, capChannel, setRead, lastRead, unreadCount,
+  messagesForChannel, lastMessage, channelIdForProject,
+} from '../src/js/messaging.js';
+import {
   bucketTasks, workSummary, applyPendingTasks, coerceStatus,
   outboxAdd, outboxRemove, outboxSummary,
 } from '../src/mobile/core.js';
@@ -143,9 +147,11 @@ class MobileStore {
   _applyUser(u) {
     if (!u) return;
     this.user = u.name || u.username;
+    this.username = u.username || u.name;
     this.role = u.role;
     this.scope = Array.isArray(u.projects) ? u.projects : [];
   }
+  _uid() { return this.username || this.user || 'me'; }
 
   async login(username, password) {
     try {
@@ -267,6 +273,40 @@ class MobileStore {
   summary(projectId = this.projectId) { return workSummary(this.tasks(projectId)); }
   pendingCount() { return outboxSummary(this.outbox).pending; }
 
+  // ---- messaging ----
+  get channels() { return (this.state.channels || []).filter((c) => !c.archived); }
+  get messages() { return this.state.messages || []; }
+  channel(id) { return this.channels.find((c) => c.id === id) || null; }
+  channelFor(projectId) { return this.channels.find((c) => c.id === channelIdForProject(projectId)) || null; }
+  messagesFor(channelId) { return messagesForChannel(this.messages, channelId); }
+  lastMessageFor(channelId) { return lastMessage(this.messages, channelId); }
+  lastReadAt(channelId) { return lastRead(this.state.reads, this._uid(), channelId); }
+  unread(channelId) { return unreadCount(this.messages, channelId, this.lastReadAt(channelId), this._uid()); }
+  totalUnread() { return this.channels.reduce((a, c) => a + this.unread(c.id), 0); }
+  canPost(channelId) {
+    const ch = this.channel(channelId);
+    if (!ch) return false;
+    return ch.type === 'project' ? this.canEditProject(ch.projectId) : this.can('write');
+  }
+
+  sendMessage(channelId, body) {
+    const ch = this.channel(channelId);
+    if (!ch || !String(body || '').trim()) return;
+    if (!this.canPost(channelId)) { this.notify('You don’t have access to that channel.', 'warn'); return; }
+    this._queueWrite({ kind: 'message.send', channelId, method: 'POST', path: '/messages', body: { channelId, body: String(body).trim() } });
+    this.markRead(channelId);
+  }
+
+  markRead(channelId) {
+    if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
+    const at = new Date().toISOString();
+    this.state.reads = setRead(this.state.reads, this._uid(), channelId, at);
+    if (!this.local && this.authState === 'authed') {
+      api('POST', '/channels/' + channelId + '/read', { at }).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch(() => {});
+    }
+    this._emit();
+  }
+
   // ---- writes (optimistic; queue + replay when offline) ----
   // Each write applies locally first, then tries the API. A network failure
   // pushes the op to the outbox; an auth/permission error is surfaced honestly.
@@ -326,6 +366,10 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push(makeReport(this.state.reports, { ...op.body, createdBy: this.user }));
+    } else if (op.kind === 'message.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body }));
+      this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
   }
@@ -345,6 +389,9 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       if (!Array.isArray(this.state.reports)) this.state.reports = [];
       this.state.reports.push({ id: op.qid, attachments: [], _provisional: true, ...op.body });
+    } else if (op.kind === 'message.send') {
+      if (!Array.isArray(this.state.messages)) this.state.messages = [];
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], createdAt: new Date().toISOString(), _provisional: true });
     }
   }
 
@@ -398,6 +445,9 @@ class MobileStore {
     } else if (op.kind === 'report.create') {
       const i = (this.state.reports || []).findIndex((x) => x.id === op.qid);
       if (i >= 0) this.state.reports[i] = data; else this.state.reports.push(data);
+    } else if (op.kind === 'message.send') {
+      const i = (this.state.messages || []).findIndex((x) => x.id === op.qid);
+      if (i >= 0) this.state.messages[i] = data; else this.state.messages.push(data);
     }
   }
 }

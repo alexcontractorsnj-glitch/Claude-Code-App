@@ -16,6 +16,7 @@ import { WEATHER } from '../src/js/fieldreports.js';
 
 const TABS = {
   work:    { label: 'Work',    icon: '🪧' },
+  chat:    { label: 'Chat',    icon: '💬' },
   punch:   { label: 'Punch',   icon: '✔' },
   reports: { label: 'Reports', icon: '📋' },
   me:      { label: 'Me',      icon: '👷' },
@@ -106,7 +107,7 @@ function renderTabBar() {
   if (!tb) return;
   clear(tb);
   const s = store.summary();
-  const badge = { work: s.overdue, punch: store.punch().filter((p) => p.status === 'open').length, reports: 0, me: store.pendingCount() };
+  const badge = { work: s.overdue, chat: store.totalUnread(), punch: store.punch().filter((p) => p.status === 'open').length, reports: 0, me: store.pendingCount() };
   Object.entries(TABS).forEach(([key, t]) => {
     const b = badge[key];
     tb.appendChild(el('button', {
@@ -368,6 +369,79 @@ function openReportCreate() {
   });
 }
 
+// --- CHAT tab ---------------------------------------------------------------
+function msgTime(iso) { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); }
+function msgDay(iso) { return Dates.fmtLong(Dates.iso(new Date(iso))); }
+function mentionNodes(text) {
+  return String(text || '').split(/(@[a-zA-Z0-9_.-]+)/g)
+    .map((p) => (/^@[a-zA-Z0-9_.-]+$/.test(p) ? el('span', { class: 'cf-mention' }, p) : p));
+}
+
+function renderChat(main) {
+  if (ui.chatChannelId && store.channel(ui.chatChannelId)) return renderConversation(main, ui.chatChannelId);
+  ui.chatChannelId = null;
+  const channels = store.channels.filter((c) => store.projectId === 'all' || c.projectId === store.projectId);
+  main.appendChild(el('div', { class: 'cf-listhead' }, [el('div', {}, `Channels · ${channels.length}`)]));
+  if (!channels.length) { main.appendChild(empty('No channels for this project.')); return; }
+  channels.forEach((c) => {
+    const proj = store.project(c.projectId);
+    const last = store.lastMessageFor(c.id);
+    const un = store.unread(c.id);
+    main.appendChild(el('div', { class: 'cf-card flat', onclick: () => { ui.chatChannelId = c.id; render(); } }, [
+      el('div', { class: 'cf-card-bar', style: { background: (proj && proj.color) || '#888' } }),
+      el('div', { class: 'cf-card-body' }, [
+        el('div', { class: 'cf-card-top' }, [
+          el('div', { class: 'cf-card-name' }, c.name),
+          un ? el('span', { class: 'cf-badge cf-badge-inline' }, String(un)) : null,
+        ]),
+        el('div', { class: 'cf-card-note' }, last ? `${last.authorName.split(' ')[0]}: ${last.body}` : 'No messages yet'),
+        last ? el('div', { class: 'cf-card-foot' }, [el('span', { class: 'cf-muted' }, msgTime(last.createdAt))]) : null,
+      ]),
+    ]));
+  });
+}
+
+function renderConversation(main, channelId) {
+  const ch = store.channel(channelId);
+  const msgs = store.messagesFor(channelId);
+  main.appendChild(el('div', { class: 'cf-chat-head' }, [
+    el('button', { class: 'cf-back', onclick: () => { ui.chatChannelId = null; render(); } }, '‹'),
+    el('div', { class: 'cf-chat-title' }, ch.name),
+  ]));
+
+  const stream = el('div', { class: 'cf-chat-stream' });
+  if (!msgs.length) stream.appendChild(el('div', { class: 'cf-empty' }, 'No messages yet. Say hello.'));
+  let lastDay = null;
+  msgs.forEach((m) => {
+    const day = msgDay(m.createdAt);
+    if (day !== lastDay) { stream.appendChild(el('div', { class: 'cf-chat-day' }, day)); lastDay = day; }
+    const mine = m.authorId === store._uid();
+    stream.appendChild(el('div', { class: 'cf-bubble-row' + (mine ? ' mine' : '') }, [
+      el('div', { class: 'cf-bubble' + (mine ? ' mine' : '') + (m._provisional ? ' pending' : '') }, [
+        mine ? null : el('div', { class: 'cf-bubble-author' }, m.authorName),
+        el('div', { class: 'cf-bubble-body' }, mentionNodes(m.body)),
+        el('div', { class: 'cf-bubble-meta' }, [
+          el('span', {}, msgTime(m.createdAt)),
+          mine ? el('span', { class: 'cf-tick' }, m._provisional ? '🕓' : '✓') : null,
+        ]),
+      ]),
+    ]));
+  });
+  main.appendChild(stream);
+
+  if (store.canPost(channelId)) {
+    const ta = el('textarea', { class: 'cf-input cf-chat-input', rows: '1', placeholder: 'Message…' });
+    const send = () => { const t = ta.value.trim(); if (!t) return; store.sendMessage(channelId, t); ta.value = ''; render(); };
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+    main.appendChild(el('div', { class: 'cf-chat-composer' }, [ta, el('button', { class: 'cf-chat-send', onclick: send }, '➤')]));
+  } else {
+    main.appendChild(el('div', { class: 'cf-chat-composer readonly' }, store.can('write') ? 'No posting access to this project' : 'Read-only role'));
+  }
+
+  store.markRead(channelId);
+  setTimeout(() => { const s = main.querySelector('.cf-chat-stream'); if (s) s.scrollTop = s.scrollHeight; }, 0);
+}
+
 // --- ME tab -----------------------------------------------------------------
 function renderMe(main) {
   const pending = store.pendingCount();
@@ -418,7 +492,7 @@ function pickProject() {
 function fab(label, onclick) { return el('button', { class: 'cf-fab', onclick }, label); }
 
 // --- render orchestration ---------------------------------------------------
-const VIEW = { work: renderWork, punch: renderPunch, reports: renderReports, me: renderMe };
+const VIEW = { work: renderWork, chat: renderChat, punch: renderPunch, reports: renderReports, me: renderMe };
 
 function render() {
   if (!built) return;
@@ -427,6 +501,7 @@ function render() {
   const main = document.getElementById('cf-main');
   if (!main) return;
   clear(main);
+  main.className = 'cf-main' + (ui.tab === 'chat' && ui.chatChannelId ? ' chatting' : '');
   main.scrollTop = 0;
   VIEW[ui.tab](main);
 }
