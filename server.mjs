@@ -401,6 +401,13 @@ function actorOf(req) {
   const token = parseCookies(req)[COOKIE];
   return getSession(token, (username) => users.find((u) => u.username === username));
 }
+// True when the original client request used HTTPS. Render (and most PaaS) put
+// the app behind a TLS-terminating proxy and signal the real scheme via the
+// x-forwarded-proto header; fall back to the direct socket for bare deploys.
+function isHttps(req) {
+  const xf = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return xf === 'https' || !!(req.socket && req.socket.encrypted);
+}
 
 // --- Auth routes (no session required for login) ---------------------------
 async function handleAuth(req, res, action) {
@@ -417,11 +424,11 @@ async function handleAuth(req, res, action) {
     }
     clearFailures(username);
     const token = createSession(user);
-    return send(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(token) });
+    return send(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(token, { secure: isHttps(req) }) });
   }
   if (action === 'logout' && req.method === 'POST') {
     destroySession(parseCookies(req)[COOKIE]);
-    return send(res, 204, null, { 'Set-Cookie': clearCookie() });
+    return send(res, 204, null, { 'Set-Cookie': clearCookie({ secure: isHttps(req) }) });
   }
   if (action === 'me' && req.method === 'GET') {
     const a = actorOf(req);

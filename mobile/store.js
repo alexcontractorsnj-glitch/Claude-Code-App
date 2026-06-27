@@ -276,7 +276,20 @@ class MobileStore {
       }
     }, POLL_MS);
   }
+  // A 401 on a single request does NOT mean the session is gone — a flaky mobile
+  // network or a free-tier instance mid-cold-start can blip one request. Before
+  // tearing the user out to the login screen (which they experience as "the chat
+  // just closed"), CONFIRM with /auth/me. Only a confirmed 401 logs them out; an
+  // offline error keeps the session and flips to offline mode.
   _sessionLost() {
+    if (this.local || this._verifyingAuth) return;
+    this._verifyingAuth = true;
+    api('GET', '/auth/me')
+      .then(({ data }) => { if (data && data.user) { this._applyUser(data.user); this.authState = 'authed'; this._startPolling(); this._startStream(); this._flush(); } else this._dropToLogin(); })
+      .catch((err) => { if (err && err.status === 401) this._dropToLogin(); else this._setOnline(false); })
+      .finally(() => { this._verifyingAuth = false; });
+  }
+  _dropToLogin() {
     if (this._poll) { clearInterval(this._poll); this._poll = null; }
     this._stopStream();
     this.role = null; this.authState = 'required';

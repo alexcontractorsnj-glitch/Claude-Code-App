@@ -10,6 +10,9 @@
 //    admin  → everything (reset, manage users)
 // ============================================================================
 import crypto from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;   // 12 hours
 const SESSION_TTL_S = 12 * 60 * 60;
@@ -59,12 +62,35 @@ export async function seedUsers() {
 // SESSION_SECRET in the environment (Render can generate + persist one) to keep
 // the secret stable across restarts; without it a random per-boot secret is
 // used and sessions reset on restart, exactly as the old in-memory map did.
-if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 16) {
-  console.warn('⚠ SESSION_SECRET is too short (<16 chars) and is being IGNORED — sessions will reset on every restart. Set a longer value to keep users logged in.');
+// Resolve the signing secret with a fallback chain that keeps users logged in
+// across restarts / free-tier cold-starts even when SESSION_SECRET is unset:
+//   1. SESSION_SECRET env (≥16 chars)            — best; stable + multi-instance
+//   2. data/.session-secret on disk              — persisted auto-secret
+//   3. generate one, persist it to disk, reuse   — survives sleep/wake restarts
+// Only if the disk can't be written (truly ephemeral host) does the secret
+// become per-boot, and we warn loudly. This is the #1 fix for "it logs me out /
+// the chat closes every time": a per-boot random secret invalidated every token
+// the moment the instance recycled.
+const SECRET_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', '.session-secret');
+function resolveSecret() {
+  const env = process.env.SESSION_SECRET;
+  if (env && env.length >= 16) return env;
+  if (env && env.length < 16) console.warn('⚠ SESSION_SECRET is too short (<16 chars) and is being IGNORED. Set a longer value.');
+  try {
+    const saved = readFileSync(SECRET_FILE, 'utf8').trim();
+    if (saved.length >= 16) return saved;
+  } catch { /* not created yet */ }
+  const gen = crypto.randomBytes(32).toString('hex');
+  try {
+    mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
+    writeFileSync(SECRET_FILE, gen, { mode: 0o600 });
+    console.warn('⚠ SESSION_SECRET not set — generated one and persisted it to data/.session-secret so sessions survive restarts. Set SESSION_SECRET in the environment for ephemeral-disk or multi-instance hosting.');
+  } catch {
+    console.warn('⚠ SESSION_SECRET not set and could not be persisted — sessions will reset on restart. Set SESSION_SECRET in the environment to keep users logged in.');
+  }
+  return gen;
 }
-const SECRET = (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16)
-  ? process.env.SESSION_SECRET
-  : crypto.randomBytes(32).toString('hex');
+const SECRET = resolveSecret();
 
 const sign = (data) => crypto.createHmac('sha256', SECRET).update(data).digest('base64url');
 
@@ -144,14 +170,19 @@ export function parseCookies(req) {
   return out;
 }
 
-// NOTE: no `Secure` flag because the demo runs over plain HTTP on localhost.
-// In production behind HTTPS, add `Secure` so the cookie is never sent in clear.
+// SameSite=Lax (not Strict): Strict withholds the cookie on the top-level
+// navigation that launches an installed PWA from the home screen or any external
+// link, so the app boots "logged out" and bounces to the sign-in screen. Lax
+// still sends it on same-site requests and top-level GETs — the right default
+// for an app you install. `Secure` is added when the request arrived over HTTPS
+// (Render terminates TLS and sets x-forwarded-proto), required for the cookie to
+// stick in a standalone PWA over HTTPS; omitted on plain-HTTP localhost.
 export const COOKIE = 'bf_session';
-export function sessionCookie(token) {
-  return `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_S}`;
+export function sessionCookie(token, { secure = false } = {}) {
+  return `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_S}${secure ? '; Secure' : ''}`;
 }
-export function clearCookie() {
-  return `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+export function clearCookie({ secure = false } = {}) {
+  return `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
 }
 
 // Strip secrets before sending a user object to a client.
