@@ -101,6 +101,8 @@ class MobileStore {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this._setOnline(true));
       window.addEventListener('offline', () => this._setOnline(false));
+      window.addEventListener('pagehide', () => this._flushPersist());
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this._flushPersist(); });
     }
     this._boot();
   }
@@ -109,7 +111,24 @@ class MobileStore {
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   onNotice(fn) { this.noticeListeners.add(fn); return () => this.noticeListeners.delete(fn); }
   onAuth(fn) { this.authListeners.add(fn); return () => this.authListeners.delete(fn); }
-  _emit() { lsSet(LS_STATE, this.state); this.listeners.forEach((fn) => fn()); }
+  // Notify the UI immediately (responsive), but COALESCE the localStorage cache
+  // write — serialising the whole state on every emit froze the main thread when
+  // SSE events arrived in bursts. Trailing debounce: write 500ms after activity
+  // settles, and at most once per 3s under a sustained storm. Flush on pagehide.
+  _emit() {
+    this.listeners.forEach((fn) => fn());
+    this._persistDirty = true;
+    clearTimeout(this._persistT);
+    this._persistT = setTimeout(() => this._flushPersist(), 500);
+    if (!this._persistMax) this._persistMax = setTimeout(() => this._flushPersist(), 3000);
+  }
+  _flushPersist() {
+    clearTimeout(this._persistT); this._persistT = null;
+    clearTimeout(this._persistMax); this._persistMax = null;
+    if (!this._persistDirty) return;
+    this._persistDirty = false;
+    try { lsSet(LS_STATE, this.state); } catch { /* quota/serialize */ }
+  }
   _emitAuth() { this.authListeners.forEach((fn) => fn(this.authState)); }
   notify(msg, tone = 'info') { this.noticeListeners.forEach((fn) => fn(msg, tone)); }
 
@@ -453,7 +472,11 @@ class MobileStore {
 
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
-    const at = new Date().toISOString();
+    // Mark up to the latest message's OWN timestamp (server-stamped), not the
+    // device clock. unreadCount compares ISO strings, so a client clock that
+    // lags the server would leave unread > 0 forever → re-emit loop → frozen UI.
+    const last = this.lastMessageFor(channelId);
+    const at = last && last.createdAt > new Date().toISOString() ? last.createdAt : new Date().toISOString();
     this.state.reads = setRead(this.state.reads, this._uid(), channelId, at);
     if (!this.local && this.authState === 'authed') {
       api('POST', '/channels/' + channelId + '/read', { at }).then(({ etag }) => { this.rev = revOf(etag) ?? this.rev; }).catch(() => {});

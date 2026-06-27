@@ -609,7 +609,7 @@ function renderConversation(main, channelId) {
     // Only rebuild when the messages or typing set actually changed. A presence
     // ping or stream reconnect leaves both identical → no DOM churn, no flicker.
     const sig = msgs.map((m) => m.id + (m._provisional ? '~' : '') + (m.voice ? 'v' : '') + (m.photo ? 'p' : '')).join(',') + '|' + typers.join(',');
-    if (sig === streamSig) { store.markRead(channelId); return; }
+    if (sig === streamSig) return;   // nothing changed (e.g. presence ping) → no rebuild, no markRead
     streamSig = sig;
     const stick = nearBottom();
     clear(stream);

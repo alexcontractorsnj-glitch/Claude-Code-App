@@ -837,7 +837,12 @@ class Store {
 
   markRead(channelId) {
     if (this.unread(channelId) === 0) return;     // nothing new → no write/emit (avoids render loops)
-    const at = new Date().toISOString();
+    // Mark up to the latest message's own (server-stamped) timestamp, not the
+    // local clock — a lagging client clock would leave unread > 0 forever
+    // (ISO-string compare) → markRead re-emits on every render → frozen tab.
+    const last = this.lastMessageFor(channelId);
+    const now = new Date().toISOString();
+    const at = last && last.createdAt > now ? last.createdAt : now;
     const before = this.lastReadAt(channelId);
     this.state.reads = setRead(this.state.reads, this._uid(), channelId, at);
     this._emit();
