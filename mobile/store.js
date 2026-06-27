@@ -374,8 +374,63 @@ class MobileStore {
   get messages() { return this.state.messages || []; }
   channel(id) { return this.channels.find((c) => c.id === id) || null; }
   channelFor(projectId) { return this.channels.find((c) => c.id === channelIdForProject(projectId)) || null; }
-  messagesFor(channelId) { return messagesForChannel(this.messages, channelId); }
-  lastMessageFor(channelId) { return lastMessage(this.messages, channelId); }
+  // Server messages with any UN-ACKED outbox sends projected on top, so a just-
+  // sent message stays visible CONTINUOUSLY — even if a concurrent _pull/poll
+  // replaces this.state with server-only data before our send echoes back.
+  // (Mirrors tasks()/applyPendingTasks; without it the message flashes out then in.)
+  messagesFor(channelId) {
+    return this._mergePending(messagesForChannel(this.messages, channelId),
+      this._pendingMessages().filter((m) => m.channelId === channelId));
+  }
+  lastMessageFor(channelId) {
+    const merged = this.messagesFor(channelId);
+    return merged.length ? merged[merged.length - 1] : null;
+  }
+  // Rebuild provisional message objects from the outbox (the source of truth for
+  // un-acked sends). Each carries a _stamp computed at queue time so its sort
+  // position is stable and never jumps when the server echo (server-stamped)
+  // lands — see _nextStamp for the clock-skew handling.
+  _pendingMessages() {
+    const uid = this._uid();
+    return (this.outbox || [])
+      .filter((op) => op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send')
+      .map((op) => {
+        const linkedTo = (op.kind === 'message.send' ? (op.body && op.body.linkedTo) : op.linkedTo) || null;
+        const m = { id: op.qid, channelId: op.channelId, authorId: uid, authorName: this.user,
+          body: op.kind === 'message.send' ? op.body.body : '', attachments: [], linkedTo,
+          createdAt: op._stamp || new Date().toISOString(), _provisional: true };
+        if (op.kind === 'voice.send') m.voice = { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime };
+        if (op.kind === 'photo.send') m.photo = { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h };
+        return m;
+      });
+  }
+  // Merge pending messages into a sorted server list, deduping so each send shows
+  // exactly ONCE. A pending op is dropped if the list already holds either the
+  // optimistic copy (same id == qid, present right after _applyLocal) OR the real
+  // server echo (which carries clientId == qid). The clientId match is essential:
+  // a concurrent _pull can land the real row — with a fresh server id — while the
+  // outbox op is still in flight, and without it the message would render twice.
+  _mergePending(list, pending) {
+    if (!pending.length) return list;
+    const seen = new Set();
+    for (const m of list) { seen.add(m.id); if (m.clientId) seen.add(m.clientId); }
+    const extra = pending.filter((m) => !seen.has(m.id));
+    if (!extra.length) return list;
+    return list.concat(extra).sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  }
+  // A timestamp for a new local message that sorts AFTER everything already in
+  // the channel. If the device clock lags the server (common in the field), the
+  // newest server message is "in the future" vs Date.now(); naively stamping with
+  // the device clock would slot the new message ABOVE existing ones, then make it
+  // jump down when the server echo arrives. Nudging 1ms past the latest avoids it.
+  _nextStamp(channelId) {
+    const now = new Date().toISOString();
+    let latest = '';
+    for (const m of this.messages) if (m.channelId === channelId && m.createdAt > latest) latest = m.createdAt;
+    for (const op of (this.outbox || [])) if (op._stamp && op.channelId === channelId && op._stamp > latest) latest = op._stamp;
+    if (now > latest) return now;
+    return new Date(Date.parse(latest) + 1).toISOString();
+  }
   lastReadAt(channelId) { return lastRead(this.state.reads, this._uid(), channelId); }
   unread(channelId) { return unreadCount(this.messages, channelId, this.lastReadAt(channelId), this._uid()); }
   totalUnread() { return this.channels.reduce((a, c) => a + this.unread(c.id), 0); }
@@ -394,8 +449,11 @@ class MobileStore {
   }
 
   // ---- task Activity (a task's slice of its project channel) ----
-  messagesForTask(taskId) { return messagesForTask(this.messages, taskId); }
-  taskActivityCount(taskId) { return messagesForTask(this.messages, taskId).length; }
+  messagesForTask(taskId) {
+    return this._mergePending(messagesForTask(this.messages, taskId),
+      this._pendingMessages().filter((m) => m.linkedTo && m.linkedTo.kind === 'task' && m.linkedTo.id === taskId));
+  }
+  taskActivityCount(taskId) { return this.messagesForTask(taskId).length; }
   canPostTask(taskId) { const t = this.task(taskId); return !!t && this.canEditProject(t.projectId); }
   postTaskMessage(taskId, body) {
     const t = this.task(taskId); if (!t) return;
@@ -522,6 +580,9 @@ class MobileStore {
   // through the domain factories and persisted to LocalStorage only.
   _queueWrite(op) {
     op.qid = newQid();
+    // Stamp message-bearing ops once, at queue time, so their sort position is
+    // fixed from first paint through server echo (no jump under clock skew).
+    if (op.kind === 'message.send' || op.kind === 'voice.send' || op.kind === 'photo.send') op._stamp = this._nextStamp(op.channelId);
     if (this.local) return this._localWrite(op);
     this._applyLocal(op);
     this.outbox = outboxAdd(this.outbox, op);
@@ -557,15 +618,15 @@ class MobileStore {
       if (x) Object.assign(x, op.body, { clearedBy: this.user, clearedAt: new Date().toISOString() });
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, linkedTo: op.body.linkedTo || null, createdAt: op._stamp }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, createdAt: op._stamp, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime } }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     } else if (op.kind === 'photo.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h } }));
+      this.state.messages.push(makeMessage(this.state.messages, { channelId: op.channelId, authorId: this._uid(), authorName: this.user, linkedTo: op.linkedTo || null, createdAt: op._stamp, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h } }));
       this.state.messages = capChannel(this.state.messages, op.channelId);
     }
     this._emit();
@@ -600,13 +661,13 @@ class MobileStore {
       if (x) Object.assign(x, op.body);
     } else if (op.kind === 'message.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], linkedTo: op.body.linkedTo || null, createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: op.body.body, attachments: [], linkedTo: op.body.linkedTo || null, createdAt: op._stamp, _provisional: true });
     } else if (op.kind === 'voice.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, voice: { url: `data:${op.body.mime};base64,${op.body.b64}`, dur: op.body.dur, mime: op.body.mime }, createdAt: op._stamp, _provisional: true });
     } else if (op.kind === 'photo.send') {
       if (!Array.isArray(this.state.messages)) this.state.messages = [];
-      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h }, createdAt: new Date().toISOString(), _provisional: true });
+      this.state.messages.push({ id: op.qid, channelId: op.channelId, authorId: this._uid(), authorName: this.user, body: '', attachments: [], linkedTo: op.linkedTo || null, photo: { url: `data:${op.body.mime};base64,${op.body.b64}`, w: op.body.w, h: op.body.h }, createdAt: op._stamp, _provisional: true });
     }
   }
 
@@ -629,10 +690,13 @@ class MobileStore {
               ? { mime: op.body.mime, data: op.body.b64, w: op.body.w, h: op.body.h }
               : { mime: op.body.mime, data: op.body.b64, dur: op.body.dur });
             const ref = isPhoto ? { photo: { id: up.data.id } } : { voice: { id: up.data.id } };
-            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, ...ref, linkedTo: op.linkedTo || null }));
+            ({ data, etag } = await api('POST', '/messages', { channelId: op.channelId, ...ref, linkedTo: op.linkedTo || null, clientId: op.qid }));
           } else {
             const headers = op.rev != null ? { 'If-Match': '"' + op.rev + '"' } : {};
-            ({ data, etag } = await api(op.method, op.path, op.body, headers));
+            // Tag a sent message with its provisional id so the server echo can be
+            // matched to (and de-duped against) the optimistic copy on every client.
+            const sendBody = op.kind === 'message.send' ? { ...op.body, clientId: op.qid } : op.body;
+            ({ data, etag } = await api(op.method, op.path, sendBody, headers));
           }
           this.rev = revOf(etag) ?? this.rev;
           this._reconcile(op, data);

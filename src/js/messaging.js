@@ -33,6 +33,7 @@ export function makeMessage(existing, partial) {
   const maxId = Math.max(0, ...(existing || []).map((m) => +String(m.id).slice(1) || 0));
   return {
     id: 'm' + (maxId + 1),
+    clientId: partial.clientId || null,             // the sender's optimistic id (qid) — lets a client match its provisional to this echo and de-dupe
     channelId: partial.channelId,
     authorId: partial.authorId || null,             // username (stable) for attribution
     authorName: partial.authorName || 'Unknown',

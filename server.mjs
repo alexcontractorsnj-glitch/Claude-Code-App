@@ -853,7 +853,9 @@ async function handleApi(req, res, urlPath) {
         const msg = makeMessage(state.messages, {
           channelId: ch.id, authorId: actor.username, authorName: actor.name,
           body: body.body, attachments: cleanAttachments(body.attachments, actor.name),
-          voice: vref, photo: pref, linkedTo: body.linkedTo || null, createdAt: new Date().toISOString(),
+          voice: vref, photo: pref, linkedTo: body.linkedTo || null,
+          clientId: typeof body.clientId === 'string' ? body.clientId.slice(0, 40) : null,
+          createdAt: new Date().toISOString(),
         });
         if (!msg.body && !msg.attachments.length && !msg.voice && !msg.photo) return send(res, 400, { error: 'empty message' });
         state.messages.push(msg);
