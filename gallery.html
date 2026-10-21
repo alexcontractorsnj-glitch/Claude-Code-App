@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Luxury Home Gallery — Portfolio Showcase</title>
+  <meta name="description" content="Interactive portfolio gallery for luxury home builders & remodelers — new homes, additions, renovations, kitchens, bathrooms and exteriors." />
+
+  <!-- Fonts: progressive enhancement. Falls back to system fonts offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!--
+    ════════════════════════════════════════════════════════════════════════
+      LUXURY HOME GALLERY  —  single-file, drop-in showcase
+    ────────────────────────────────────────────────────────────────────────
+      • Everything (markup + styles + script) lives in this one file so it can
+        be pasted into a WordPress "Custom HTML" block or embedded via iframe.
+      • All CSS is namespaced under `.lhg` to avoid clashing with theme styles.
+      • To use your own photos, edit the PROJECTS array near the bottom.
+      • See GALLERY.md for WordPress install options & shortcode snippet.
+    ════════════════════════════════════════════════════════════════════════
+  -->
+  <style>
+  /* ======================  LUXURY HOME GALLERY (.lhg)  ====================== */
+  .lhg, .lhg *, .lhg *::before, .lhg *::after { box-sizing: border-box; }
+
+  .lhg {
+    /* —— Theme tokens: change these to re-skin the whole gallery —— */
+    --lhg-ink:        #16140f;   /* near-black charcoal            */
+    --lhg-bg:         #faf7f1;   /* warm gallery background        */
+    --lhg-surface:    #ffffff;
+    --lhg-muted:      #6f6a60;
+    --lhg-line:       #e7e0d4;
+    --lhg-gold:       #b08d4f;   /* champagne / brass accent       */
+    --lhg-gold-soft:  #d8c39a;
+    --lhg-overlay:    rgba(16, 14, 11, .92);
+    --lhg-radius:     16px;
+    --lhg-shadow:     0 10px 40px -12px rgba(16,14,11,.28);
+    --lhg-shadow-lg:  0 30px 80px -24px rgba(16,14,11,.55);
+    --lhg-serif:      'Cormorant Garamond', 'Hoefler Text', Georgia, serif;
+    --lhg-sans:       'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --lhg-ease:       cubic-bezier(.22, .61, .36, 1);
+
+    font-family: var(--lhg-sans);
+    color: var(--lhg-ink);
+    background: var(--lhg-bg);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .lhg__wrap { max-width: 1240px; margin: 0 auto; padding: clamp(28px, 5vw, 72px) clamp(16px, 4vw, 40px); }
+
+  /* —— Intro / header —— */
+  .lhg__head { text-align: center; max-width: 720px; margin: 0 auto clamp(22px, 4vw, 40px); }
+  .lhg__eyebrow {
+    display: inline-flex; align-items: center; gap: .6em;
+    font-size: .74rem; font-weight: 600; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--lhg-gold);
+  }
+  .lhg__eyebrow::before, .lhg__eyebrow::after { content: ""; width: 26px; height: 1px; background: var(--lhg-gold-soft); }
+  .lhg__title {
+    font-family: var(--lhg-serif);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 6vw, 3.6rem);
+    line-height: 1.05;
+    letter-spacing: -.01em;
+    margin: .35em 0 .25em;
+  }
+  .lhg__title em { font-style: italic; color: var(--lhg-gold); }
+  .lhg__sub { color: var(--lhg-muted); font-size: clamp(1rem, 2.4vw, 1.12rem); margin: 0; }
+
+  /* —— Filter bar —— */
+  .lhg__filters {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; gap: 10px;
+    margin: 0 0 clamp(20px, 4vw, 34px);
+    padding: 14px 4px;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    background: linear-gradient(to bottom, var(--lhg-bg) 72%, transparent);
+  }
+  .lhg__filters::-webkit-scrollbar { display: none; }
+  .lhg__filter {
+    scroll-snap-align: start;
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center; gap: .5em;
+    min-height: 44px;
+    padding: 9px 18px;
+    border: 1px solid var(--lhg-line);
+    border-radius: 999px;
+    background: var(--lhg-surface);
+    color: var(--lhg-ink);
+    font-family: inherit; font-size: .9rem; font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .25s var(--lhg-ease), color .25s var(--lhg-ease),
+                border-color .25s var(--lhg-ease), transform .15s var(--lhg-ease), box-shadow .25s;
+  }
+  .lhg__filter:hover { border-color: var(--lhg-gold-soft); transform: translateY(-1px); }
+  .lhg__filter:focus-visible { outline: 2px solid var(--lhg-gold); outline-offset: 2px; }
+  .lhg__filter[aria-pressed="true"] {
+    background: var(--lhg-ink); color: #fff; border-color: var(--lhg-ink);
+    box-shadow: var(--lhg-shadow);
+  }
+  .lhg__count {
+    font-size: .72rem; font-weight: 700;
+    padding: 1px 7px; border-radius: 999px;
+    background: var(--lhg-bg); color: var(--lhg-muted);
+  }
+  .lhg__filter[aria-pressed="true"] .lhg__count { background: rgba(255,255,255,.16); color: var(--lhg-gold-soft); }
+
+  /* —— Grid —— */
+  .lhg__grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: clamp(12px, 1.6vw, 20px);
+  }
+  .lhg__item {
+    grid-column: span 6;                /* 2 across on tablet/desktop default */
+    position: relative;
+    border-radius: var(--lhg-radius);
+    overflow: hidden;
+    background: var(--lhg-ink);
+    box-shadow: var(--lhg-shadow);
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(22px);
+    transition: transform .45s var(--lhg-ease), opacity .45s var(--lhg-ease), box-shadow .35s var(--lhg-ease);
+  }
+  .lhg__item.is-in { opacity: 1; transform: none; }
+  .lhg__item:hover { box-shadow: var(--lhg-shadow-lg); }
+  .lhg__item:focus-visible { outline: 3px solid var(--lhg-gold); outline-offset: 3px; }
+  .lhg__item.is-tall  { grid-column: span 6; }
+  .lhg__item.is-wide  { grid-column: span 12; }
+  .lhg__item.is-feature { grid-column: span 8; }
+  /* FLIP transition while reordering */
+  .lhg__item.is-moving { transition: transform .5s var(--lhg-ease); z-index: 2; }
+  .lhg__item.is-hidden { display: none; }
+
+  .lhg__media { position: relative; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; background: var(--lhg-ink); }
+  .lhg__item.is-tall .lhg__media { aspect-ratio: 3 / 4; }
+  .lhg__item.is-feature .lhg__media, .lhg__item.is-wide .lhg__media { aspect-ratio: 16 / 10; }
+  .lhg__img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    transform: scale(1.02);
+    transition: transform .9s var(--lhg-ease), filter .4s;
+    background:
+      linear-gradient(135deg, #2a2620, #4a4133 55%, #6f6047);  /* graceful fallback while/if image is absent */
+  }
+  .lhg__item:hover .lhg__img { transform: scale(1.08); }
+
+  /* gradient scrim + caption */
+  .lhg__item::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to top, rgba(16,14,11,.82) 0%, rgba(16,14,11,.18) 42%, transparent 70%);
+    opacity: .9; transition: opacity .35s; pointer-events: none;
+  }
+  .lhg__cap {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+    padding: clamp(14px, 2vw, 22px);
+    color: #fff; pointer-events: none;
+    transform: translateY(6px); opacity: .96;
+    transition: transform .4s var(--lhg-ease);
+  }
+  .lhg__item:hover .lhg__cap { transform: none; }
+  .lhg__badge {
+    display: inline-block; margin-bottom: .55em;
+    font-size: .66rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--lhg-ink); background: var(--lhg-gold-soft);
+    padding: 4px 10px; border-radius: 999px;
+  }
+  .lhg__name { font-family: var(--lhg-serif); font-weight: 600; font-size: clamp(1.25rem, 2.6vw, 1.7rem); line-height: 1.12; margin: 0; }
+  .lhg__meta { display: flex; gap: .9em; align-items: center; margin-top: .35em; font-size: .82rem; color: rgba(255,255,255,.82); }
+  .lhg__meta svg { width: 14px; height: 14px; opacity: .8; vertical-align: -2px; margin-right: 3px; }
+  .lhg__zoom {
+    position: absolute; top: 14px; right: 14px; z-index: 3;
+    width: 40px; height: 40px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: rgba(255,255,255,.16); backdrop-filter: blur(6px);
+    color: #fff; opacity: 0; transform: scale(.8);
+    transition: opacity .3s, transform .3s var(--lhg-ease);
+    pointer-events: none;
+  }
+  .lhg__item:hover .lhg__zoom, .lhg__item:focus-visible .lhg__zoom { opacity: 1; transform: none; }
+  .lhg__tag-ba {
+    position: absolute; top: 14px; left: 14px; z-index: 3;
+    font-size: .64rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    background: var(--lhg-gold); color: #fff; padding: 5px 9px; border-radius: 6px;
+  }
+
+  /* —— Empty state —— */
+  .lhg__empty { grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--lhg-muted); display: none; }
+  .lhg__empty.is-on { display: block; }
+
+  /* —— Lightbox —— */
+  .lhg-lb {
+    position: fixed; inset: 0; z-index: 9999;
+    display: none; align-items: center; justify-content: center;
+    background: var(--lhg-overlay);
+    backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity .3s;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .lhg-lb.is-open { display: flex; opacity: 1; }
+  .lhg-lb__stage { position: relative; width: min(94vw, 1180px); max-height: 92vh; display: flex; flex-direction: column; }
+  .lhg-lb__frame {
+    position: relative; flex: 1; min-height: 0;
+    display: grid; place-items: center;
+    border-radius: 12px; overflow: hidden;
+    background: #000;
+  }
+  .lhg-lb__img { max-width: 100%; max-height: 78vh; width: auto; height: auto; display: block; object-fit: contain; }
+  .lhg-lb__info { color: #f3ead9; padding: 16px 4px 4px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+  .lhg-lb__title { font-family: var(--lhg-serif); font-size: clamp(1.4rem, 3.4vw, 2rem); font-weight: 600; margin: 0; }
+  .lhg-lb__desc { color: rgba(243,234,217,.72); font-size: .92rem; flex: 1 1 280px; min-width: 220px; }
+  .lhg-lb__btn {
+    position: absolute; z-index: 5;
+    width: 52px; height: 52px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.18);
+    background: rgba(20,18,14,.55); color: #fff;
+    display: grid; place-items: center; cursor: pointer;
+    transition: background .2s, transform .2s var(--lhg-ease), border-color .2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .lhg-lb__btn:hover { background: var(--lhg-gold); border-color: var(--lhg-gold); transform: scale(1.06); }
+  .lhg-lb__btn:focus-visible { outline: 2px solid var(--lhg-gold); outline-offset: 3px; }
+  .lhg-lb__prev { left: -8px; top: 50%; transform: translateY(-50%); }
+  .lhg-lb__next { right: -8px; top: 50%; transform: translateY(-50%); }
+  .lhg-lb__prev:hover { transform: translateY(-50%) scale(1.06); }
+  .lhg-lb__next:hover { transform: translateY(-50%) scale(1.06); }
+  .lhg-lb__close { top: -8px; right: -8px; width: 46px; height: 46px; }
+  .lhg-lb__counter {
+    position: absolute; top: -2px; left: 2px; z-index: 5;
+    font-size: .8rem; font-weight: 600; letter-spacing: .08em; color: rgba(243,234,217,.7);
+  }
+  .lhg-lb__img.is-swap { animation: lhg-fade .35s var(--lhg-ease); }
+  @keyframes lhg-fade { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
+
+  /* —— Before / After slider —— */
+  .lhg-ba { position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; touch-action: pan-y; cursor: ew-resize; }
+  .lhg-ba__img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .lhg-ba__after { clip-path: inset(0 0 0 50%); }
+  .lhg-ba__handle {
+    position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff;
+    transform: translateX(-50%); pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.15);
+  }
+  .lhg-ba__grip {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 44px; height: 44px; border-radius: 50%;
+    background: #fff; color: var(--lhg-ink);
+    display: grid; place-items: center; box-shadow: var(--lhg-shadow);
+  }
+  .lhg-ba__lbl { position: absolute; bottom: 12px; z-index: 4; font-size: .64rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #fff; background: rgba(16,14,11,.6); padding: 4px 9px; border-radius: 6px; pointer-events: none; }
+  .lhg-ba__lbl--before { left: 12px; }
+  .lhg-ba__lbl--after  { right: 12px; }
+  .lhg-lb__frame .lhg-ba { border-radius: 12px; }
+  .lhg-lb__frame .lhg-ba, .lhg-lb__frame.is-ba { width: min(94vw,1180px); height: 78vh; }
+
+  /* —— Footer CTA —— */
+  .lhg__cta { text-align: center; margin-top: clamp(34px, 6vw, 64px); }
+  .lhg__cta-line { color: var(--lhg-muted); margin: 0 0 1em; font-family: var(--lhg-serif); font-style: italic; font-size: clamp(1.2rem,3vw,1.6rem); }
+  .lhg__cta-btn {
+    display: inline-block; padding: 15px 34px; border-radius: 999px;
+    background: var(--lhg-ink); color: #fff; text-decoration: none;
+    font-weight: 600; font-size: .95rem; letter-spacing: .02em;
+    transition: background .25s, transform .15s var(--lhg-ease), box-shadow .25s;
+    box-shadow: var(--lhg-shadow);
+  }
+  .lhg__cta-btn:hover { background: var(--lhg-gold); transform: translateY(-2px); box-shadow: var(--lhg-shadow-lg); }
+
+  /* ======================  RESPONSIVE  ====================== */
+  @media (max-width: 900px) {
+    .lhg__item.is-feature { grid-column: span 12; }
+    .lhg__item.is-feature .lhg__media { aspect-ratio: 16 / 10; }
+  }
+  @media (max-width: 640px) {
+    .lhg__grid { gap: 12px; }
+    .lhg__item, .lhg__item.is-tall, .lhg__item.is-feature { grid-column: span 12; }
+    .lhg__item .lhg__media { aspect-ratio: 4 / 3; }
+    .lhg__item.is-tall .lhg__media { aspect-ratio: 4 / 3; }
+    .lhg__cap { transform: none; }                      /* always show captions on touch */
+    .lhg__zoom { display: none; }
+    .lhg-lb__prev { left: 6px; }
+    .lhg-lb__next { right: 6px; }
+    .lhg-lb__close { top: 6px; right: 6px; }
+    .lhg-lb__btn { width: 46px; height: 46px; }
+  }
+
+  /* ======================  MOTION PREFERENCES  ====================== */
+  @media (prefers-reduced-motion: reduce) {
+    .lhg *, .lhg *::before, .lhg *::after { transition: none !important; animation: none !important; }
+    .lhg__item { opacity: 1; transform: none; }
+  }
+  </style>
+</head>
+
+<body style="margin:0;background:#faf7f1;">
+
+  <!-- ╔══════════════════════════════════════════════════════════════════╗
+       ║  COPY FROM HERE … (everything inside <section class="lhg">)       ║
+       ╚══════════════════════════════════════════════════════════════════╝ -->
+  <section class="lhg" aria-label="Project portfolio gallery">
+    <div class="lhg__wrap">
+
+      <header class="lhg__head">
+        <span class="lhg__eyebrow">Selected Work</span>
+        <h2 class="lhg__title">Crafted Spaces, <em>Built to Last</em></h2>
+        <p class="lhg__sub">Explore our portfolio of custom new homes, thoughtful additions, and
+          award-winning renovations. Tap any project to view it full screen.</p>
+      </header>
+
+      <!-- Filters are generated by script, but rendered server-safe here as a fallback -->
+      <div class="lhg__filters" role="tablist" aria-label="Filter projects by category" id="lhgFilters"></div>
+
+      <div class="lhg__grid" id="lhgGrid" aria-live="polite">
+        <div class="lhg__empty" id="lhgEmpty">No projects in this category yet — check back soon.</div>
+      </div>
+
+      <div class="lhg__cta">
+        <p class="lhg__cta-line">Imagining a space like these for your home?</p>
+        <a class="lhg__cta-btn" href="#contact">Start Your Project →</a>
+      </div>
+
+    </div>
+
+    <!-- Lightbox -->
+    <div class="lhg-lb" id="lhgLb" role="dialog" aria-modal="true" aria-label="Project viewer">
+      <div class="lhg-lb__stage">
+        <span class="lhg-lb__counter" id="lhgCounter"></span>
+        <button class="lhg-lb__btn lhg-lb__close" id="lhgClose" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <div class="lhg-lb__frame" id="lhgFrame"></div>
+        <button class="lhg-lb__btn lhg-lb__prev" id="lhgPrev" aria-label="Previous project">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <button class="lhg-lb__btn lhg-lb__next" id="lhgNext" aria-label="Next project">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <div class="lhg-lb__info">
+          <h3 class="lhg-lb__title" id="lhgTitle"></h3>
+          <p class="lhg-lb__desc" id="lhgDesc"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- ╔══════════════════════════════════════════════════════════════════╗
+       ║  … TO HERE                                                        ║
+       ╚══════════════════════════════════════════════════════════════════╝ -->
+
+  <script>
+  (function () {
+    "use strict";
+
+    /* ════════════════════════════════════════════════════════════════════
+       1) DATA  —  edit this array to use your own projects & photos.
+          • cats: any of the CATEGORY keys below (an item may have several)
+          • img : large image for the lightbox  (use your /wp-content URLs)
+          • thumb (optional): smaller grid image; falls back to img
+          • ba (optional): { before, after } enables the before/after slider
+          • size (optional): "feature" | "tall" | "wide" for a varied layout
+       ════════════════════════════════════════════════════════════════════ */
+    var U = function (id, w) {
+      return "https://images.unsplash.com/photo-" + id + "?auto=format&fit=crop&w=" + (w || 1400) + "&q=80";
+    };
+
+    var CATEGORIES = [
+      { key: "all",        label: "All Projects" },
+      { key: "new-homes",  label: "New Homes" },
+      { key: "additions",  label: "Additions" },
+      { key: "renovations",label: "Renovations" },
+      { key: "kitchens",   label: "Kitchens" },
+      { key: "bathrooms",  label: "Bathrooms" },
+      { key: "exteriors",  label: "Exteriors" }
+    ];
+
+    var PROJECTS = [
+      { title: "Hillcrest Modern Estate", cats: ["new-homes", "exteriors"], location: "Saddle River, NJ", year: 2024,
+        size: "feature", img: U("1512917774080-9991f1c4c750"),
+        desc: "A 6,400 sq ft custom build with floor-to-ceiling glass, white oak interiors and a cantilevered terrace." },
+
+      { title: "Chef's Kitchen Remodel", cats: ["kitchens", "renovations"], location: "Ridgewood, NJ", year: 2024,
+        size: "tall", img: U("1556909114-f6e7ad7d3136", 1000),
+        ba: { before: U("1565183997392-2f6f122e5912", 1000), after: U("1556909114-f6e7ad7d3136", 1000) },
+        desc: "Gut renovation opening a cramped galley into a light-filled cook's kitchen with quartzite waterfall island." },
+
+      { title: "Spa Master Bath", cats: ["bathrooms", "renovations"], location: "Montclair, NJ", year: 2023,
+        img: U("1600210492486-724fe5c67fb0", 1000),
+        desc: "Honed marble, a freestanding soaking tub and a curbless wet room with rainfall and body sprays." },
+
+      { title: "Rear Two-Story Addition", cats: ["additions"], location: "Glen Rock, NJ", year: 2023,
+        img: U("1600585154340-be6161a56a0c", 1000),
+        desc: "Doubled the footprint with a new family room below and primary suite above, seamlessly matched to the original." },
+
+      { title: "Coastal Farmhouse", cats: ["new-homes", "exteriors"], location: "Spring Lake, NJ", year: 2023,
+        size: "tall", img: U("1568605114967-8130f3a36994", 1000),
+        desc: "Board-and-batten siding, a wraparound porch and standing-seam metal roof built for shore weather." },
+
+      { title: "Warm Minimalist Kitchen", cats: ["kitchens"], location: "Hoboken, NJ", year: 2024,
+        img: U("1584622650111-993a426fbf0a", 1000),
+        desc: "Rift-cut walnut cabinetry, integrated appliances and a soapstone island anchor this open-plan space." },
+
+      { title: "Garden Suite Addition", cats: ["additions", "renovations"], location: "Maplewood, NJ", year: 2022,
+        size: "wide", img: U("1600607687939-ce8a6c25118c"),
+        desc: "A sunlit in-law suite addition with vaulted ceilings, wide-plank floors and a private garden entry." },
+
+      { title: "Powder Room Jewel Box", cats: ["bathrooms"], location: "Summit, NJ", year: 2024,
+        size: "tall", img: U("1604709177225-055f99402ea3", 1000),
+        desc: "Hand-painted wallpaper, a vessel sink and brushed-brass fittings turn a small room into a statement." },
+
+      { title: "Stone & Cedar Exterior", cats: ["exteriors", "new-homes"], location: "Franklin Lakes, NJ", year: 2022,
+        img: U("1570129477492-45c003edd2be"),
+        desc: "Natural stone veneer, cedar accents and architectural lighting create dramatic evening curb appeal." },
+
+      { title: "Whole-Home Renovation", cats: ["renovations"], location: "Westfield, NJ", year: 2023,
+        size: "feature", img: U("1600566753086-00f18fb6b3ea"),
+        desc: "A dated 1980s colonial reimagined down to the studs — new everything, with an airy, modern-classic palette." },
+
+      { title: "Double Vanity Retreat", cats: ["bathrooms", "renovations"], location: "Chatham, NJ", year: 2024,
+        img: U("1620626011761-996317b8d101", 1000),
+        desc: "Bookmatched porcelain, heated floors and a backlit mirror wall in a serene primary bath." },
+
+      { title: "Sunroom & Pool House", cats: ["additions", "exteriors"], location: "Mendham, NJ", year: 2022,
+        size: "tall", img: U("1605276374104-dee2a0ed3cd6", 1000),
+        desc: "A glass sunroom addition flows to a new poolside cabana with an outdoor kitchen and fireplace." }
+    ];
+
+    /* ════════════════════════════════════════════════════════════════════
+       2) ENGINE  —  no edits needed below.
+       ════════════════════════════════════════════════════════════════════ */
+    var grid     = document.getElementById("lhgGrid");
+    var filterEl = document.getElementById("lhgFilters");
+    var emptyEl  = document.getElementById("lhgEmpty");
+    var lb       = document.getElementById("lhgLb");
+    var frame    = document.getElementById("lhgFrame");
+    var lbTitle  = document.getElementById("lhgTitle");
+    var lbDesc   = document.getElementById("lhgDesc");
+    var counter  = document.getElementById("lhgCounter");
+    var reduce   = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    var active = "all";
+    var visible = [];      // PROJECTS indices currently shown (filter order)
+    var lbIndex = 0;       // pointer into `visible`
+
+    function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+    function labelFor(key) {
+      for (var i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i].key === key) return CATEGORIES[i].label;
+      return key;
+    }
+    function countFor(key) {
+      if (key === "all") return PROJECTS.length;
+      return PROJECTS.filter(function (p) { return p.cats.indexOf(key) > -1; }).length;
+    }
+
+    var PIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.2-7-11a7 7 0 1114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>';
+    var ZOOM = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>';
+
+    // ---- Build filter buttons ----
+    function renderFilters() {
+      var html = "";
+      for (var i = 0; i < CATEGORIES.length; i++) {
+        var c = CATEGORIES[i], n = countFor(c.key);
+        if (c.key !== "all" && n === 0) continue;           // hide empty categories
+        html += '<button class="lhg__filter" role="tab" data-key="' + c.key + '"' +
+                ' aria-pressed="' + (c.key === active) + '">' +
+                esc(c.label) + '<span class="lhg__count">' + n + '</span></button>';
+      }
+      filterEl.innerHTML = html;
+    }
+
+    // ---- Build cards ----
+    function cardHTML(p, idx) {
+      var sizeClass = p.size === "feature" ? " is-feature" : p.size === "tall" ? " is-tall" : p.size === "wide" ? " is-wide" : "";
+      var thumb = p.thumb || p.img;
+      var primary = labelFor(p.cats[0]);
+      var baTag = p.ba ? '<span class="lhg__tag-ba">Before / After</span>' : "";
+      return '<article class="lhg__item' + sizeClass + '" data-idx="' + idx + '" tabindex="0" role="button"' +
+        ' aria-label="' + esc(p.title + ", " + primary) + '. View project.">' +
+        '<div class="lhg__media">' +
+          '<img class="lhg__img" loading="lazy" decoding="async" src="' + thumb + '" alt="' + esc(p.title) + '"' +
+          ' onerror="this.style.visibility=\'hidden\'">' +
+        '</div>' +
+        baTag +
+        '<span class="lhg__zoom">' + ZOOM + '</span>' +
+        '<div class="lhg__cap">' +
+          '<span class="lhg__badge">' + esc(primary) + '</span>' +
+          '<h3 class="lhg__name">' + esc(p.title) + '</h3>' +
+          '<div class="lhg__meta"><span>' + PIN + esc(p.location) + '</span><span>' + esc(p.year) + '</span></div>' +
+        '</div>' +
+      '</article>';
+    }
+
+    function renderGrid() {
+      var html = "";
+      for (var i = 0; i < PROJECTS.length; i++) html += cardHTML(PROJECTS[i], i);
+      grid.insertAdjacentHTML("afterbegin", html);
+      observeReveal();
+    }
+
+    // ---- Scroll reveal (staggered) ----
+    function observeReveal() {
+      var items = grid.querySelectorAll(".lhg__item");
+      if (reduce || !("IntersectionObserver" in window)) {
+        items.forEach(function (el) { el.classList.add("is-in"); });
+        return;
+      }
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            var el = e.target;
+            var order = +el.getAttribute("data-order") || 0;
+            el.style.transitionDelay = Math.min(order * 60, 360) + "ms";
+            el.classList.add("is-in");
+            io.unobserve(el);
+          }
+        });
+      }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+      var shown = 0;
+      items.forEach(function (el) {
+        if (el.classList.contains("is-hidden")) return;
+        el.setAttribute("data-order", shown++);
+        io.observe(el);
+      });
+    }
+
+    // ---- Filtering with FLIP animation ----
+    function applyFilter(key, push) {
+      active = key;
+      Array.prototype.forEach.call(filterEl.children, function (b) {
+        b.setAttribute("aria-pressed", b.getAttribute("data-key") === key);
+      });
+
+      var items = Array.prototype.slice.call(grid.querySelectorAll(".lhg__item"));
+
+      // FIRST: record positions of items currently on screen
+      var first = {};
+      items.forEach(function (el) {
+        if (!el.classList.contains("is-hidden")) first[el.getAttribute("data-idx")] = el.getBoundingClientRect();
+      });
+
+      // Decide visibility
+      visible = [];
+      items.forEach(function (el) {
+        var idx = +el.getAttribute("data-idx");
+        var p = PROJECTS[idx];
+        var match = key === "all" || p.cats.indexOf(key) > -1;
+        el.classList.toggle("is-hidden", !match);
+        if (match) visible.push(idx);
+      });
+      emptyEl.classList.toggle("is-on", visible.length === 0);
+
+      // LAST + INVERT + PLAY
+      if (!reduce) {
+        items.forEach(function (el) {
+          if (el.classList.contains("is-hidden")) return;
+          var f = first[el.getAttribute("data-idx")];
+          el.classList.add("is-in");                  // ensure shown
+          if (!f) {                                   // newly appearing — fade in
+            el.style.opacity = 0; el.style.transform = "scale(.96)";
+            requestAnimationFrame(function () {
+              el.classList.add("is-moving");
+              el.style.opacity = ""; el.style.transform = "";
+            });
+            return;
+          }
+          var l = el.getBoundingClientRect();
+          var dx = f.left - l.left, dy = f.top - l.top;
+          if (dx || dy) {
+            el.style.transform = "translate(" + dx + "px," + dy + "px)";
+            el.style.transitionDuration = "0s";
+            requestAnimationFrame(function () {
+              el.classList.add("is-moving");
+              el.style.transitionDuration = "";
+              el.style.transform = "";
+            });
+          }
+        });
+        setTimeout(function () {
+          items.forEach(function (el) { el.classList.remove("is-moving"); el.style.transitionDelay = ""; });
+        }, 560);
+      } else {
+        items.forEach(function (el) { if (!el.classList.contains("is-hidden")) el.classList.add("is-in"); });
+      }
+
+      if (push !== false) {
+        var hash = key === "all" ? " " : "#" + key;
+        if (history.replaceState) history.replaceState(null, "", key === "all" ? location.pathname + location.search : hash);
+      }
+    }
+
+    // ---- Before / After slider factory ----
+    function buildBA(p, big) {
+      var wrap = document.createElement("div");
+      wrap.className = "lhg-ba";
+      wrap.innerHTML =
+        '<img class="lhg-ba__img lhg-ba__before" src="' + p.ba.before + '" alt="Before — ' + esc(p.title) + '">' +
+        '<img class="lhg-ba__img lhg-ba__after"  src="' + p.ba.after  + '" alt="After — '  + esc(p.title) + '">' +
+        '<span class="lhg-ba__lbl lhg-ba__lbl--before">Before</span>' +
+        '<span class="lhg-ba__lbl lhg-ba__lbl--after">After</span>' +
+        '<div class="lhg-ba__handle"><span class="lhg-ba__grip">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg>' +
+        '</span></div>';
+      var after  = wrap.querySelector(".lhg-ba__after");
+      var handle = wrap.querySelector(".lhg-ba__handle");
+      function setPos(clientX) {
+        var r = wrap.getBoundingClientRect();
+        var pct = Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100));
+        after.style.clipPath = "inset(0 0 0 " + pct + "%)";
+        handle.style.left = pct + "%";
+      }
+      var dragging = false;
+      function down(e) { dragging = true; setPos((e.touches ? e.touches[0] : e).clientX); e.preventDefault(); }
+      function move(e) { if (dragging) setPos((e.touches ? e.touches[0] : e).clientX); }
+      function up() { dragging = false; }
+      wrap.addEventListener("mousedown", down);
+      wrap.addEventListener("touchstart", down, { passive: false });
+      window.addEventListener("mousemove", move);
+      window.addEventListener("touchmove", move, { passive: true });
+      window.addEventListener("mouseup", up);
+      window.addEventListener("touchend", up);
+      return wrap;
+    }
+
+    // ---- Lightbox ----
+    var lastFocus = null;
+    function openLb(idx) {
+      lbIndex = visible.indexOf(idx);
+      if (lbIndex < 0) lbIndex = 0;
+      lastFocus = document.activeElement;
+      lb.classList.add("is-open");
+      document.body.style.overflow = "hidden";
+      showLb();
+      document.getElementById("lhgClose").focus();
+    }
+    function closeLb() {
+      lb.classList.remove("is-open");
+      document.body.style.overflow = "";
+      frame.innerHTML = "";
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+    }
+    function step(dir) {
+      lbIndex = (lbIndex + dir + visible.length) % visible.length;
+      showLb();
+    }
+    function showLb() {
+      var p = PROJECTS[visible[lbIndex]];
+      frame.classList.toggle("is-ba", !!p.ba);
+      frame.innerHTML = "";
+      if (p.ba) {
+        frame.appendChild(buildBA(p));
+      } else {
+        var img = document.createElement("img");
+        img.className = "lhg-lb__img is-swap";
+        img.src = p.img; img.alt = p.title;
+        frame.appendChild(img);
+      }
+      lbTitle.textContent = p.title;
+      lbDesc.textContent = p.desc || "";
+      counter.textContent = (lbIndex + 1) + " / " + visible.length;
+    }
+
+    // ---- Events ----
+    grid.addEventListener("click", function (e) {
+      var card = e.target.closest(".lhg__item");
+      if (card && !card.classList.contains("is-hidden")) openLb(+card.getAttribute("data-idx"));
+    });
+    grid.addEventListener("keydown", function (e) {
+      var card = e.target.closest(".lhg__item");
+      if (card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openLb(+card.getAttribute("data-idx")); }
+    });
+    filterEl.addEventListener("click", function (e) {
+      var btn = e.target.closest(".lhg__filter");
+      if (btn) applyFilter(btn.getAttribute("data-key"));
+    });
+    document.getElementById("lhgClose").addEventListener("click", closeLb);
+    document.getElementById("lhgPrev").addEventListener("click", function () { step(-1); });
+    document.getElementById("lhgNext").addEventListener("click", function () { step(1); });
+    lb.addEventListener("click", function (e) { if (e.target === lb) closeLb(); });
+    document.addEventListener("keydown", function (e) {
+      if (!lb.classList.contains("is-open")) return;
+      if (e.key === "Escape") closeLb();
+      else if (e.key === "ArrowLeft") step(-1);
+      else if (e.key === "ArrowRight") step(1);
+      else if (e.key === "Tab") {                       // focus trap
+        var f = lb.querySelectorAll("button");
+        var first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    });
+
+    // Touch swipe inside the lightbox (ignored while dragging a before/after handle)
+    var tsx = 0, tsy = 0;
+    frame.addEventListener("touchstart", function (e) { tsx = e.touches[0].clientX; tsy = e.touches[0].clientY; }, { passive: true });
+    frame.addEventListener("touchend", function (e) {
+      if (frame.classList.contains("is-ba")) return;
+      var dx = e.changedTouches[0].clientX - tsx, dy = e.changedTouches[0].clientY - tsy;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) step(dx < 0 ? 1 : -1);
+    }, { passive: true });
+
+    // ---- Init ----
+    renderFilters();
+    renderGrid();
+    var fromHash = (location.hash || "").replace("#", "");
+    applyFilter(countFor(fromHash) ? fromHash : "all", false);
+  })();
+  </script>
+</body>
+</html>
